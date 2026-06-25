@@ -1,26 +1,48 @@
 @import "tailwindcss";
 
+/* ============================================================
+   REVISE CREATIVE DASHBOARD — BASE STYLES
+   Dark palette tokens + Inter font, applied globally.
+   ============================================================ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* ---- Dark palette (carried from old project) ---- */
+  --bg:            #0d0d0f;  /* page background */
+  --card:          #141416;  /* cards */
+  --nested:        #0d0d0f;  /* nested / inputs */
+  --hover:         #1a1a1d;  /* hover */
+  --raised:        #1f1f23;  /* raised surfaces */
+  --border:        #27272a;  /* borders (gray-800) */
+  --border-soft:   #1f1f23;  /* softer borders */
+
+  --text:          #f3f4f6;  /* primary text (gray-100) */
+  --text-secondary:#9ca3af;  /* secondary (gray-400) */
+  --text-muted:    #6b7280;  /* muted (gray-500/600) */
+
+  --accent:        #f3f4f6;  /* white/gray accent buttons */
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Make the Inter variable the default font for everything. */
+html {
+  font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--bg);
+  color: var(--text);
+  /* Crisp font rendering — part of the "not generic" feel. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  margin: 0;
+}
+
+/* Respect users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
