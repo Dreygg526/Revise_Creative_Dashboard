@@ -47,10 +47,11 @@ const GATES: Partial<Record<Stage, GateRule>> = {
     return missing;
   },
 
-  // Ready to Launch -> Testing : destination URL set.
+  // Ready to Launch -> Testing : at least one destination URL set.
   "Ready to Launch": (ad) => {
     const missing: string[] = [];
-    if (!ad.destination_url) missing.push("Destination URL");
+    const urls = (ad.destination_urls ?? []).filter((u) => u && u.trim());
+    if (urls.length === 0) missing.push("Destination URL");
     return missing;
   },
 

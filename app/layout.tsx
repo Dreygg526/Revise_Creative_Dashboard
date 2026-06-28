@@ -1,10 +1,8 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { AuthProvider } from "@/app/hooks/useAuth";
 
-// Load Inter through Next.js's built-in font system.
-// This self-hosts the font (fast, no layout shift) and exposes it
-// as a CSS variable we use across the whole app.
 const inter = Inter({
   subsets: ["latin"],
   variable: "--font-inter",
@@ -23,7 +21,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={inter.variable}>
-      <body>{children}</body>
+      <body>
+        <AuthProvider>{children}</AuthProvider>
+      </body>
     </html>
   );
 }
