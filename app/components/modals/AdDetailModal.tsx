@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { X, Lock, ArrowRight, Trash2, Plus } from "lucide-react";
 import { useSettings } from "@/app/hooks/useSettings";
+import { useMyRole } from "@/app/hooks/useMyRole";
+import { can } from "@/app/lib/permissions";
 import { STAGE_ORDER, checkMove, stageIndex } from "@/app/lib/gates";
 import type { Ad } from "@/app/types";
 
@@ -44,7 +46,14 @@ const sectionTitle: React.CSSProperties = {
 };
 
 export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetailModalProps) {
-  const { valuesFor, teamByRole } = useSettings();
+  const { valuesFor, strategistOptions, editorOptions, mediaBuyerOptions } = useSettings();
+  const myRole = useMyRole();
+  const allowTitle = can(myRole, "edit_title");
+  const allowZone1 = can(myRole, "edit_zone1");
+  const allowZone2 = can(myRole, "edit_zone2");
+  const allowPerf = can(myRole, "edit_performance");
+  const allowMove = can(myRole, "move_stage");
+  const allowDelete = can(myRole, "delete_ad");
 
   // Local editable copy of the ad. We save on blur / explicit save.
   const [draft, setDraft] = useState<Ad>(ad);
@@ -54,9 +63,39 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   useEffect(() => {
     if (ad) setDraft(ad);
   }, [ad]);
+
+  // ----- AUTOSAVE -----
+  // Debounced save whenever the draft changes. We skip the initial load
+  // and skip while a manual save / stage move is happening.
+  const didMount = useRef(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // Skip the first render (draft just loaded from the ad — nothing to save).
+    if (!didMount.current) {
+      didMount.current = true;
+      return;
+    }
+    // Skip if draft matches the incoming ad (change came from a refresh, not a user edit).
+    if (JSON.stringify(draft) === JSON.stringify(ad)) {
+      return;
+    }
+    setSaveStatus("saving");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      await persist(draft);
+      setSaveStatus("saved");
+    }, 800);
+
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
   const [saving, setSaving] = useState(false);
   const [gateMsg, setGateMsg] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
 
   function set<K extends keyof Ad>(key: K, value: Ad[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -81,43 +120,55 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
     });
   }
 
-  // Persist all current field edits.
+  // Single source of truth for what fields get written.
+  async function persist(d: Ad) {
+    await onSave(ad.id, {
+      dtc_number: d.dtc_number,
+      ad_name: d.ad_name,
+      product: d.product,
+      persona: d.persona,
+      sub_avatar: d.sub_avatar,
+      core_emotion: d.core_emotion,
+      problem: d.problem,
+      awareness: d.awareness,
+      angle: d.angle,
+      concept: d.concept,
+      priority: d.priority,
+      assigned_strategist: d.assigned_strategist,
+      assigned_editor: d.assigned_editor,
+      assigned_media_buyer: d.assigned_media_buyer,
+      format: d.format,
+      ad_type: d.ad_type,
+      content_source: d.content_source,
+      due_date: d.due_date,
+      brief_link: d.brief_link,
+      frame_io_link: d.frame_io_link,
+      destination_urls: d.destination_urls,
+      whitelisting_pages: d.whitelisting_pages,
+      notes: d.notes,
+      result: d.result,
+      spend: d.spend,
+      purchases: d.purchases,
+      cvr: d.cvr,
+      learning: d.learning,
+    });
+  }
+
+  // Manual "Save changes" button — saves now and shows saved status.
   async function saveFields() {
     setSaving(true);
-    await onSave(ad.id, {
-      dtc_number: draft.dtc_number,
-      ad_name: draft.ad_name,
-      product: draft.product,
-      persona: draft.persona,
-      sub_avatar: draft.sub_avatar,
-      core_emotion: draft.core_emotion,
-      problem: draft.problem,
-      awareness: draft.awareness,
-      angle: draft.angle,
-      concept: draft.concept,
-      priority: draft.priority,
-      assigned_strategist: draft.assigned_strategist,
-      assigned_editor: draft.assigned_editor,
-      format: draft.format,
-      ad_type: draft.ad_type,
-      content_source: draft.content_source,
-      due_date: draft.due_date,
-      brief_link: draft.brief_link,
-      frame_io_link: draft.frame_io_link,
-      destination_urls: draft.destination_urls,
-      whitelisting_pages: draft.whitelisting_pages,
-      notes: draft.notes,
-      result: draft.result,
-      spend: draft.spend,
-      purchases: draft.purchases,
-      cvr: draft.cvr,
-      learning: draft.learning,
-    });
+    setSaveStatus("saving");
+    await persist(draft);
     setSaving(false);
+    setSaveStatus("saved");
   }
 
   // Attempt to move to a target stage. Runs the gate first.
   async function moveToStage(target: string) {
+    if (!allowMove) {
+      setGateMsg("You don’t have permission to move this ad’s stage.");
+      return;
+    }
     setGateMsg(null);
     const { allowed, missing } = checkMove(draft, draft.stage, target);
 
@@ -130,6 +181,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
 
     // Save any pending field edits together with the stage change.
     setSaving(true);
+    setSaveStatus("saving");
     const updated = { ...draft, stage: target };
     setDraft(updated);
     await onSave(ad.id, {
@@ -149,6 +201,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
       learning: draft.learning,
     });
     setSaving(false);
+    setSaveStatus("saved");
   }
 
   const personas = valuesFor("persona");
@@ -163,8 +216,9 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const adTypes = valuesFor("ad_type");
   const contentSources = valuesFor("content_source");
   const products = valuesFor("product");
-  const editors = teamByRole("Editor");
-  const strategists = teamByRole("Strategist");
+  const editors = editorOptions;
+  const strategists = strategistOptions;
+  const mediaBuyers = mediaBuyerOptions;
 
   // Safety: never render if we somehow have no ad/draft.
   if (!draft) return null;
@@ -217,14 +271,20 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
           }}
         >
           <div>
-            <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "2px" }}>
-              {draft.dtc_number != null ? `DTC #${draft.dtc_number}` : "No DTC #"}
-              {"  ·  "}
-              {draft.stage}
+            <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "2px", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span>
+                {draft.dtc_number != null ? `DTC #${draft.dtc_number}` : "No DTC #"}
+                {"  ·  "}
+                {draft.stage}
+              </span>
+              {saveStatus === "saving" && <span style={{ color: "var(--text-secondary)" }}>· Saving…</span>}
+              {saveStatus === "saved" && <span style={{ color: "#4ade80" }}>· All changes saved</span>}
             </div>
             <input
               value={draft.ad_name ?? ""}
               onChange={(e) => set("ad_name", e.target.value)}
+              disabled={!allowTitle}
+              title={allowTitle ? "" : "Only Founder or Strategist can edit the title"}
               placeholder="Untitled"
               style={{
                 fontSize: "18px",
@@ -349,7 +409,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
 
         {/* ---- ZONE 1: STRATEGY ---- */}
         <div style={sectionTitle}>Zone 1 · Strategy</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "20px", borderLeft: "2px solid #7c3aed", paddingLeft: "14px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "20px", borderLeft: "2px solid #7c3aed", paddingLeft: "14px", opacity: allowZone1 ? 1 : 0.55, pointerEvents: allowZone1 ? "auto" : "none" }}>
           <div>
             <label style={labelStyle}>Persona</label>
             <select style={inputStyle} value={draft.persona ?? ""} onChange={(e) => set("persona", e.target.value || null)}>
@@ -418,6 +478,14 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
               {editors.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
             </select>
           </div>
+          <div>
+            <label style={labelStyle}>Media Buyer</label>
+            <select style={inputStyle} value={draft.assigned_media_buyer ?? ""} onChange={(e) => set("assigned_media_buyer", e.target.value || null)}>
+              <option value="">—</option>
+              {mediaBuyers.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
+            </select>
+          </div>
+
           <div>
             <label style={labelStyle}>Product</label>
             <select style={inputStyle} value={draft.product ?? ""} onChange={(e) => set("product", e.target.value || null)}>
@@ -534,7 +602,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
 
         {/* ---- END OF LIFE: PERFORMANCE + LEARNING ---- */}
         <div style={sectionTitle}>Close-out · Performance &amp; Learning</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "8px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "8px", opacity: allowPerf ? 1 : 0.55, pointerEvents: allowPerf ? "auto" : "none" }}>
           <div>
             <label style={labelStyle}>Result</label>
             <select style={inputStyle} value={draft.result ?? ""} onChange={(e) => set("result", e.target.value || null)}>
@@ -575,8 +643,8 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
 
         {/* Actions */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
-          {/* Delete (left side) */}
-          {!confirmingDelete ? (
+          {/* Delete (left side) — Founder/Strategist only */}
+          {allowDelete && !confirmingDelete ? (
             <button
               onClick={() => setConfirmingDelete(true)}
               style={{
@@ -588,7 +656,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
             >
               <Trash2 size={14} /> Delete
             </button>
-          ) : (
+          ) : allowDelete && confirmingDelete ? (
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <span style={{ fontSize: "13px", color: "var(--text-secondary)" }}>Delete this ad?</span>
               <button
@@ -612,6 +680,8 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
                 Cancel
               </button>
             </div>
+          ) : (
+            <span />
           )}
 
           {/* Close + Save (right side) */}

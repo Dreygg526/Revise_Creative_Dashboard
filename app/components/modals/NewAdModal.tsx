@@ -29,7 +29,7 @@ const labelStyle: React.CSSProperties = {
 };
 
 export default function NewAdModal({ defaultDtc, onClose, onCreate }: NewAdModalProps) {
-  const { valuesFor, teamByRole } = useSettings();
+  const { valuesFor, strategistOptions, editorOptions } = useSettings();
 
   const [dtcNumber, setDtcNumber] = useState(String(defaultDtc));
   const [adName, setAdName] = useState("");
@@ -40,8 +40,8 @@ export default function NewAdModal({ defaultDtc, onClose, onCreate }: NewAdModal
   const [priority, setPriority] = useState("Medium");
   const [saving, setSaving] = useState(false);
 
-  const editors = teamByRole("Editor");
-  const strategists = teamByRole("Strategist");
+  const editors = editorOptions;
+  const strategists = strategistOptions;
   const personas = valuesFor("persona");
   const priorities = valuesFor("priority");
 

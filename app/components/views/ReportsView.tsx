@@ -9,7 +9,6 @@ const ROLE_OPTIONS = [
   { key: "assigned_strategist", label: "Strategist" },
   { key: "assigned_editor", label: "Editor" },
   { key: "assigned_media_buyer", label: "Media Buyer" },
-  { key: "assigned_designer", label: "Graphic Designer" },
 ] as const;
 
 type RoleKey = (typeof ROLE_OPTIONS)[number]["key"];

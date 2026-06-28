@@ -32,10 +32,21 @@ export function useSettings() {
       .map((l) => l.value);
   }
 
-  // Helper: team members filtered by role (e.g. only Editors).
-  function teamByRole(role: string): TeamMember[] {
-    return team.filter((m) => m.role === role);
+  // Helper: team members filtered by one or more roles.
+  function teamByRole(...roles: string[]): TeamMember[] {
+    return team.filter((m) => roles.includes(m.role));
   }
 
-  return { lists, team, loading, valuesFor, teamByRole };
+  // Grouped helpers for the ad-form assignment dropdowns:
+  //  - Strategists list includes Founders (they can act as strategists)
+  //  - Editors list includes Graphic Designers (same work)
+  //  - Media Buyers
+  const strategistOptions = team.filter((m) => m.role === "Strategist" || m.role === "Founder");
+  const editorOptions = team.filter((m) => m.role === "Editor" || m.role === "Graphic Designer");
+  const mediaBuyerOptions = team.filter((m) => m.role === "Media Buyer");
+
+  return {
+    lists, team, loading, valuesFor, teamByRole,
+    strategistOptions, editorOptions, mediaBuyerOptions,
+  };
 }

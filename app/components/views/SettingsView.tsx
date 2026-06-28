@@ -4,6 +4,8 @@ import { useState } from "react";
 import { UserPlus, Trash2, X } from "lucide-react";
 import { useTeam } from "@/app/hooks/useTeam";
 import { roleBadgeStyle } from "@/app/lib/roleStyles";
+import { useMyRole } from "@/app/hooks/useMyRole";
+import { can } from "@/app/lib/permissions";
 
 const ROLES = ["Founder", "Strategist", "Editor", "Media Buyer", "Graphic Designer"];
 
@@ -19,6 +21,8 @@ const labelStyle: React.CSSProperties = {
 export default function SettingsView() {
   const { team, loading, inviteMember, changeRole, removeMember } = useTeam();
   const [showInvite, setShowInvite] = useState(false);
+  const myRole = useMyRole();
+  const canManageTeam = can(myRole, "manage_team");
 
   return (
     <div>
@@ -33,17 +37,19 @@ export default function SettingsView() {
       <div style={{ marginBottom: "40px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0 }}>Team</h2>
-          <button
-            onClick={() => setShowInvite(true)}
-            style={{
-              display: "flex", alignItems: "center", gap: "6px",
-              padding: "7px 12px", backgroundColor: "var(--accent)", border: "none",
-              borderRadius: "6px", color: "#0d0d0f", fontSize: "13px", fontWeight: 500,
-              cursor: "pointer", fontFamily: "inherit",
-            }}
-          >
-            <UserPlus size={15} /> Invite member
-          </button>
+          {canManageTeam && (
+            <button
+              onClick={() => setShowInvite(true)}
+              style={{
+                display: "flex", alignItems: "center", gap: "6px",
+                padding: "7px 12px", backgroundColor: "var(--accent)", border: "none",
+                borderRadius: "6px", color: "#0d0d0f", fontSize: "13px", fontWeight: 500,
+                cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              <UserPlus size={15} /> Invite member
+            </button>
+          )}
         </div>
 
         {loading && <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>Loading…</p>}
@@ -92,23 +98,27 @@ export default function SettingsView() {
                   );
                 })()}
 
-                {/* Role dropdown */}
-                <select
-                  value={m.role}
-                  onChange={(e) => changeRole(m.id, e.target.value)}
-                  style={{ ...inputStyle, width: "auto", minWidth: "150px", fontSize: "13px", padding: "6px 8px" }}
-                >
-                  {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
+                {/* Role dropdown — editable only for those who can manage the team */}
+                {canManageTeam && (
+                  <select
+                    value={m.role}
+                    onChange={(e) => changeRole(m.id, e.target.value)}
+                    style={{ ...inputStyle, width: "auto", minWidth: "150px", fontSize: "13px", padding: "6px 8px" }}
+                  >
+                    {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                )}
 
-                {/* Remove */}
-                <button
-                  onClick={() => removeMember(m.id)}
-                  style={{ background: "none", border: "1px solid var(--border)", borderRadius: "6px", color: "#fca5a5", cursor: "pointer", padding: "6px", display: "flex" }}
-                  aria-label="Remove member"
-                >
-                  <Trash2 size={14} />
-                </button>
+                {/* Remove — Founder only */}
+                {canManageTeam && (
+                  <button
+                    onClick={() => removeMember(m.id)}
+                    style={{ background: "none", border: "1px solid var(--border)", borderRadius: "6px", color: "#fca5a5", cursor: "pointer", padding: "6px", display: "flex" }}
+                    aria-label="Remove member"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             ))}
           </div>

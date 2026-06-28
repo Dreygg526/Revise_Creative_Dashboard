@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { Plus, CheckSquare, X, Trash2, Search } from "lucide-react";
 import { useAds } from "@/app/hooks/useAds";
+import { useMyRole } from "@/app/hooks/useMyRole";
+import { can } from "@/app/lib/permissions";
 import { useSettings } from "@/app/hooks/useSettings";
 import NewAdModal from "@/app/components/modals/NewAdModal";
 import AdDetailModal from "@/app/components/modals/AdDetailModal";
@@ -11,6 +13,9 @@ import type { Ad } from "@/app/types";
 export default function PipelineView() {
   const { ads, loading, error, createAd, updateAd, deleteAd, deleteMany, nextDtcNumber } = useAds();
   const { valuesFor } = useSettings();
+  const myRole = useMyRole();
+  const canCreate = can(myRole, "create_ad");
+  const canBatchDelete = can(myRole, "batch_delete");
 
   const [showNewAd, setShowNewAd] = useState(false);
   const [openAd, setOpenAd] = useState<Ad | null>(null);
@@ -89,28 +94,32 @@ export default function PipelineView() {
         <div style={{ display: "flex", gap: "8px" }}>
           {!selectMode ? (
             <>
-              <button
-                onClick={() => setSelectMode(true)}
-                style={{
-                  display: "flex", alignItems: "center", gap: "6px",
-                  padding: "8px 14px", backgroundColor: "transparent",
-                  border: "1px solid var(--border)", borderRadius: "6px",
-                  color: "var(--text-secondary)", fontSize: "14px", cursor: "pointer", fontFamily: "inherit",
-                }}
-              >
-                <CheckSquare size={16} /> Select
-              </button>
-              <button
-                onClick={() => setShowNewAd(true)}
-                style={{
-                  display: "flex", alignItems: "center", gap: "6px",
-                  padding: "8px 14px", backgroundColor: "var(--accent)", border: "none",
-                  borderRadius: "6px", color: "#0d0d0f", fontSize: "14px", fontWeight: 500,
-                  cursor: "pointer", fontFamily: "inherit",
-                }}
-              >
-                <Plus size={16} strokeWidth={2.25} /> New ad
-              </button>
+              {canBatchDelete && (
+                <button
+                  onClick={() => setSelectMode(true)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: "6px",
+                    padding: "8px 14px", backgroundColor: "transparent",
+                    border: "1px solid var(--border)", borderRadius: "6px",
+                    color: "var(--text-secondary)", fontSize: "14px", cursor: "pointer", fontFamily: "inherit",
+                  }}
+                >
+                  <CheckSquare size={16} /> Select
+                </button>
+              )}
+              {canCreate && (
+                <button
+                  onClick={() => setShowNewAd(true)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: "6px",
+                    padding: "8px 14px", backgroundColor: "var(--accent)", border: "none",
+                    borderRadius: "6px", color: "#0d0d0f", fontSize: "14px", fontWeight: 500,
+                    cursor: "pointer", fontFamily: "inherit",
+                  }}
+                >
+                  <Plus size={16} strokeWidth={2.25} /> New ad
+                </button>
+              )}
             </>
           ) : (
             <>
