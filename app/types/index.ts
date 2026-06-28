@@ -20,19 +20,31 @@ export interface Ad {
   // ---- Pipeline ----
   stage: string;                 // one of the 7 placeholder stages (editable list)
   result: string | null;         // 'Winner' | 'Killed' | null (only set at close)
+  priority: string | null;       // 'Low' | 'Medium' | 'High' (editable list)
 
   // ---- ZONE 1: STRATEGY (gate: filled before brief starts) ----
   persona: string | null;
+  sub_avatar: string | null;
   core_emotion: string | null;
   problem: string | null;
   awareness: string | null;
+  angle: string | null;
+  concept: string | null;
 
   // ---- ZONE 2: OPERATIONAL ----
   assigned_strategist: string | null;
   assigned_editor: string | null;
   format: string | null;         // 'Video Ad' | 'Static' | ...
+  ad_type: string | null;        // Imitation | Ideation | Iteration | New Concept
+  content_source: string | null;
+  due_date: string | null;       // ISO date
   brief_link: string | null;
-  destination_url: string | null;
+  frame_io_link: string | null;
+  destination_url: string | null;            // legacy single (kept, unused going forward)
+  destination_urls: string[];                // multiple entries
+  whitelisting_pages: string[];              // multiple entries
+  notes: string | null;
+  revision_count: number;
 
   // ---- END-OF-LIFE: PERFORMANCE + LEARNING ----
   // (nullable; app enforces "must fill to mark Winner/Killed")
@@ -57,10 +69,17 @@ export interface Ad {
 export type SettingsListType =
   | 'stage'
   | 'persona'
+  | 'sub_avatar'
   | 'core_emotion'
   | 'problem'
   | 'awareness'
+  | 'angle'
+  | 'concept'
   | 'format'
+  | 'ad_type'
+  | 'content_source'
+  | 'product'
+  | 'priority'
   | 'role';
 
 export interface SettingsList {
@@ -69,6 +88,14 @@ export interface SettingsList {
   value: string;
   sort_order: number;
   created_at: string;
+}
+
+// Single-value targets used for color-coding (Analytics/Reports).
+export interface SettingsTarget {
+  id: string;
+  key: string;          // 'target_cpa' | 'target_hit_rate'
+  value: number | null;
+  updated_at: string;
 }
 
 
