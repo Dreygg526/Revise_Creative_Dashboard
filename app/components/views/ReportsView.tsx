@@ -9,7 +9,7 @@ const ROLE_OPTIONS = [
   { key: "assigned_strategist", label: "Strategist" },
   { key: "assigned_editor", label: "Editor" },
   { key: "assigned_media_buyer", label: "Media Buyer" },
-  { key: "assigned_designer", label: "Designer" },
+  { key: "assigned_designer", label: "Graphic Designer" },
 ] as const;
 
 type RoleKey = (typeof ROLE_OPTIONS)[number]["key"];
@@ -32,7 +32,7 @@ export default function ReportsView() {
     // Group ads by the chosen person field.
     const map = new Map<string, Ad[]>();
     for (const ad of ads) {
-      const raw = (ad as Record<string, unknown>)[roleKey];
+      const raw = ad[roleKey as keyof Ad];
       const name = raw && String(raw).trim() ? String(raw) : "— Unassigned";
       if (!map.has(name)) map.set(name, []);
       map.get(name)!.push(ad);

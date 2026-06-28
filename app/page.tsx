@@ -11,6 +11,9 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/app/hooks/useAuth";
 import LoginPage from "@/app/components/LoginPage";
+import SetPasswordPage from "@/app/components/SetPasswordPage";
+import { useMyRole } from "@/app/hooks/useMyRole";
+import { roleBadgeStyle } from "@/app/lib/roleStyles";
 
 import PipelineView from "@/app/components/views/PipelineView";
 import AnalyticsView from "@/app/components/views/AnalyticsView";
@@ -31,7 +34,8 @@ const NAV_ITEMS = [
 type ViewKey = (typeof NAV_ITEMS)[number]["key"];
 
 export default function Home() {
-  const { session, loading, signOut } = useAuth();
+  const { session, loading, needsPassword, signOut } = useAuth();
+  const myRole = useMyRole();
   const [activeView, setActiveView] = useState<ViewKey>("pipeline");
 
   // Auth gate: while checking, show nothing; if not logged in, show login.
@@ -41,6 +45,10 @@ export default function Home() {
         Loading…
       </div>
     );
+  }
+  // If the user arrived via an invite/reset link, force password setup first.
+  if (needsPassword) {
+    return <SetPasswordPage />;
   }
   if (!session) {
     return <LoginPage />;
@@ -141,8 +149,21 @@ export default function Home() {
 
         {/* Logout pinned to the bottom */}
         <div style={{ marginTop: "auto", paddingTop: "12px" }}>
-          <div style={{ fontSize: "11px", color: "var(--text-muted)", padding: "0 12px 8px 12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {session.user.email}
+          <div style={{ padding: "0 12px 8px 12px" }}>
+            <div style={{ fontSize: "11px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: "4px" }}>
+              {session.user.email}
+            </div>
+            {myRole && (() => {
+              const rb = roleBadgeStyle(myRole);
+              return (
+                <span style={{
+                  fontSize: "10px", fontWeight: 600, padding: "2px 8px", borderRadius: "10px",
+                  backgroundColor: rb.bg, color: rb.color,
+                }}>
+                  {myRole}
+                </span>
+              );
+            })()}
           </div>
           <button
             onClick={signOut}

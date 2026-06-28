@@ -5,12 +5,14 @@ import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/app/hooks/useAuth";
 
 export default function LoginPage() {
-  const { signIn } = useAuth();
+  const { signIn, sendReset } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [resetMode, setResetMode] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   async function handleSubmit() {
     if (!email.trim() || !password) return;
@@ -22,6 +24,16 @@ export default function LoginPage() {
       setSubmitting(false);
     }
     // On success, the auth listener flips the app to the dashboard automatically.
+  }
+
+  async function handleReset() {
+    if (!email.trim()) { setError("Enter your email first."); return; }
+    setSubmitting(true);
+    setError(null);
+    const { error } = await sendReset(email.trim());
+    setSubmitting(false);
+    if (error) setError(error);
+    else setResetSent(true);
   }
 
   const inputStyle: React.CSSProperties = {
@@ -106,6 +118,21 @@ export default function LoginPage() {
             >
               {submitting ? "Signing in…" : "Sign in"}
             </button>
+
+            {/* Forgot password */}
+            {!resetSent ? (
+              <button
+                type="button"
+                onClick={handleReset}
+                style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: "12px", cursor: "pointer", fontFamily: "inherit", textAlign: "center", marginTop: "2px" }}
+              >
+                Forgot password?
+              </button>
+            ) : (
+              <div style={{ fontSize: "12px", color: "#4ade80", textAlign: "center", marginTop: "2px" }}>
+                Reset link sent — check your email.
+              </div>
+            )}
           </div>
         </div>
 

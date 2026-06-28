@@ -34,6 +34,8 @@ export interface Ad {
   // ---- ZONE 2: OPERATIONAL ----
   assigned_strategist: string | null;
   assigned_editor: string | null;
+  assigned_media_buyer: string | null;
+  assigned_designer: string | null;
   format: string | null;         // 'Video Ad' | 'Static' | ...
   ad_type: string | null;        // Imitation | Ideation | Iteration | New Concept
   content_source: string | null;
@@ -106,13 +108,15 @@ export type Role =
   | 'Founder'
   | 'Strategist'
   | 'Editor'
-  | 'Designer'
-  | 'Media Buyer';
+  | 'Media Buyer'
+  | 'Graphic Designer';
 
 export interface TeamMember {
   id: string;
   name: string;
   role: Role;
+  email: string | null;
+  status: string;           // 'active' | 'invited'
   created_at: string;
 }
 
