@@ -16,6 +16,9 @@ export default function PipelineView() {
   const myRole = useMyRole();
   const canCreate = can(myRole, "create_ad");
   const canBatchDelete = can(myRole, "batch_delete");
+  const [showClosed, setShowClosed] = useState(false);
+  const [closedSearch, setClosedSearch] = useState("");
+  const [closedFilter, setClosedFilter] = useState<"all" | "Winner" | "Killed">("all");
 
   const [showNewAd, setShowNewAd] = useState(false);
   const [openAd, setOpenAd] = useState<Ad | null>(null);
@@ -186,46 +189,136 @@ export default function PipelineView() {
       )}
 
       {!loading && !error && (
-        <div style={{ display: "flex", gap: "12px", overflowX: "auto", paddingBottom: "8px" }}>
+        <div style={{ display: "flex", gap: "10px", paddingBottom: "8px", width: "100%" }}>
           {stages.map((stage) => {
             const stageAds = adsInStage(stage);
             return (
               <div
                 key={stage}
                 style={{
-                  flex: "0 0 260px", width: "260px",
+                  flex: "1 1 0", minWidth: 0,
                   backgroundColor: "var(--nested)", border: "1px solid var(--border-soft)",
                   borderRadius: "10px", padding: "10px", display: "flex",
-                  flexDirection: "column", gap: "8px", minHeight: "200px",
+                  flexDirection: "column", gap: "8px",
+                  height: "75vh",
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2px 4px 6px 4px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2px 4px 6px 4px", flexShrink: 0 }}>
                   <span style={{ fontSize: "13px", fontWeight: 500, color: "var(--text)" }}>{stage}</span>
                   <span style={{ fontSize: "12px", color: "var(--text-muted)", backgroundColor: "var(--raised)", borderRadius: "10px", padding: "1px 8px", minWidth: "20px", textAlign: "center" }}>
                     {stageAds.length}
                   </span>
                 </div>
 
-                {stageAds.map((ad) => (
-                  <AdCard
-                    key={ad.id}
-                    ad={ad}
-                    selectMode={selectMode}
-                    selected={selected.has(ad.id)}
-                    onClick={() => handleCardClick(ad)}
-                  />
-                ))}
+                {/* Scrollable card area */}
+                <div className="column-scroll" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px", paddingRight: "2px" }}>
 
-                {stageAds.length === 0 && (
-                  <div style={{ fontSize: "12px", color: "var(--text-muted)", textAlign: "center", padding: "16px 0" }}>Empty</div>
+                {stage === "Winner / Killed" ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", alignItems: "center", padding: "12px 4px" }}>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", textAlign: "center" }}>
+                      {stageAds.length} closed {stageAds.length === 1 ? "ad" : "ads"}
+                    </div>
+                    <button
+                      onClick={() => setShowClosed(true)}
+                      style={{
+                        width: "100%", padding: "8px", backgroundColor: "var(--raised)",
+                        border: "1px solid var(--border)", borderRadius: "6px",
+                        color: "var(--text-secondary)", fontSize: "13px", cursor: "pointer", fontFamily: "inherit",
+                      }}
+                    >
+                      View closed
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {stageAds.map((ad) => (
+                      <AdCard
+                        key={ad.id}
+                        ad={ad}
+                        selectMode={selectMode}
+                        selected={selected.has(ad.id)}
+                        onClick={() => handleCardClick(ad)}
+                      />
+                    ))}
+                    {stageAds.length === 0 && (
+                      <div style={{ fontSize: "12px", color: "var(--text-muted)", textAlign: "center", padding: "16px 0" }}>Empty</div>
+                    )}
+                  </>
                 )}
+                </div>{/* end scroll area */}
               </div>
             );
           })}
         </div>
       )}
 
-      {showNewAd && (
+      {showClosed && (() => {
+        const closed = ads.filter((a) => a.stage === "Winner / Killed");
+        const q = closedSearch.trim().toLowerCase();
+        const filtered = closed
+          .filter((a) => closedFilter === "all" ? true : a.result === closedFilter)
+          .filter((a) =>
+            q === "" ? true :
+            (a.ad_name ?? "").toLowerCase().includes(q) ||
+            (a.product ?? "").toLowerCase().includes(q) ||
+            (a.persona ?? "").toLowerCase().includes(q) ||
+            String(a.dtc_number ?? "").includes(q)
+          )
+          .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+
+        return (
+          <div onClick={() => setShowClosed(false)} style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: "20px" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: "640px", maxHeight: "85vh", display: "flex", flexDirection: "column", backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "12px", padding: "20px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+                <h2 style={{ fontSize: "16px", fontWeight: 600, margin: 0 }}>Closed ads <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>· {closed.length}</span></h2>
+                <button onClick={() => setShowClosed(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: "4px", display: "flex" }}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Search + filter */}
+              <div style={{ display: "flex", gap: "8px", marginBottom: "14px" }}>
+                <input
+                  value={closedSearch}
+                  onChange={(e) => setClosedSearch(e.target.value)}
+                  placeholder="Search closed ads…"
+                  style={{ flex: 1, padding: "8px 10px", backgroundColor: "var(--nested)", border: "1px solid var(--border)", borderRadius: "6px", color: "var(--text)", fontSize: "14px", fontFamily: "inherit", outline: "none" }}
+                />
+                {(["all", "Winner", "Killed"] as const).map((f) => {
+                  const active = closedFilter === f;
+                  return (
+                    <button key={f} onClick={() => setClosedFilter(f)} style={{ padding: "6px 12px", borderRadius: "6px", border: active ? "none" : "1px solid var(--border)", backgroundColor: active ? "var(--accent)" : "transparent", color: active ? "#0d0d0f" : "var(--text-secondary)", fontSize: "13px", fontWeight: active ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+                      {f === "all" ? "All" : f}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* List */}
+              <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px" }}>
+                {filtered.map((ad) => {
+                  const win = ad.result === "Winner";
+                  return (
+                    <div key={ad.id} onClick={() => { setShowClosed(false); handleCardClick(ad); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", backgroundColor: "var(--nested)", border: "1px solid var(--border)", borderLeft: `3px solid ${win ? "#16a34a" : "#dc2626"}`, borderRadius: "8px", padding: "10px 12px", cursor: "pointer" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--text-muted)", minWidth: "50px" }}>{ad.dtc_number != null ? `DTC #${ad.dtc_number}` : "—"}</span>
+                        <span style={{ fontSize: "14px", fontWeight: 500, color: "var(--text)" }}>{ad.ad_name || "Untitled"}</span>
+                        {ad.persona && <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>· {ad.persona}</span>}
+                      </div>
+                      <span style={{ fontSize: "10px", fontWeight: 600, padding: "2px 8px", borderRadius: "10px", backgroundColor: win ? "#052e16" : "#450a0a", color: win ? "#4ade80" : "#fca5a5" }}>{ad.result}</span>
+                    </div>
+                  );
+                })}
+                {filtered.length === 0 && (
+                  <div style={{ padding: "30px", textAlign: "center", color: "var(--text-muted)", fontSize: "14px" }}>No closed ads match.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+            {showNewAd && (
         <NewAdModal
           defaultDtc={nextDtcNumber()}
           onClose={() => setShowNewAd(false)}

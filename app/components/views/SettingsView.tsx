@@ -6,6 +6,7 @@ import { useTeam } from "@/app/hooks/useTeam";
 import { roleBadgeStyle } from "@/app/lib/roleStyles";
 import { useMyRole } from "@/app/hooks/useMyRole";
 import { can } from "@/app/lib/permissions";
+import ListsManager from "@/app/components/ListsManager";
 
 const ROLES = ["Founder", "Strategist", "Editor", "Media Buyer", "Graphic Designer"];
 
@@ -23,6 +24,7 @@ export default function SettingsView() {
   const [showInvite, setShowInvite] = useState(false);
   const myRole = useMyRole();
   const canManageTeam = can(myRole, "manage_team");
+  const canManageLists = can(myRole, "manage_lists");
 
   return (
     <div>
@@ -125,12 +127,19 @@ export default function SettingsView() {
         )}
       </div>
 
-      {/* Lists section placeholder (managed dropdowns come next) */}
+      {/* Lists section */}
       <div>
-        <h2 style={{ fontSize: "15px", fontWeight: 600, margin: "0 0 8px 0" }}>Lists</h2>
-        <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-          Managed dropdown lists (personas, angles, concepts, etc.) — coming next.
+        <h2 style={{ fontSize: "15px", fontWeight: 600, margin: "0 0 4px 0" }}>Lists</h2>
+        <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 16px 0" }}>
+          Manage the dropdown options used across the dashboard.
         </p>
+        {canManageLists ? (
+          <ListsManager />
+        ) : (
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+            You don’t have permission to edit lists.
+          </p>
+        )}
       </div>
 
       {showInvite && (

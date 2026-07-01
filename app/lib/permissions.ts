@@ -27,7 +27,7 @@ const RULES: Record<Action, string[]> = {
   create_ad:        ["Founder", "Strategist"],
   edit_zone1:       ["Founder", "Strategist"],
   edit_title:       ["Founder", "Strategist"],
-  edit_zone2:       ["Founder", "Strategist", "Editor", "Media Buyer"],
+  edit_zone2:       ["Founder", "Strategist", "Media Buyer"],
   move_stage:       ["Founder", "Strategist", "Editor", "Media Buyer"],
   edit_performance: ["Founder", "Strategist", "Media Buyer"],
   delete_ad:        ["Founder", "Strategist"],

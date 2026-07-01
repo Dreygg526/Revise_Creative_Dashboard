@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { X, Lock, ArrowRight, Trash2, Plus } from "lucide-react";
+import { X, Lock, ArrowRight, Trash2, Plus, Copy, Check } from "lucide-react";
 import { useSettings } from "@/app/hooks/useSettings";
 import { useMyRole } from "@/app/hooks/useMyRole";
 import { can } from "@/app/lib/permissions";
+import CloseOutModal from "@/app/components/modals/CloseOutModal";
 import { STAGE_ORDER, checkMove, stageIndex } from "@/app/lib/gates";
 import type { Ad } from "@/app/types";
 
@@ -54,6 +55,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const allowPerf = can(myRole, "edit_performance");
   const allowMove = can(myRole, "move_stage");
   const allowDelete = can(myRole, "delete_ad");
+  const showAdSetName = myRole === "Media Buyer" || myRole === "Founder";
 
   // Local editable copy of the ad. We save on blur / explicit save.
   const [draft, setDraft] = useState<Ad>(ad);
@@ -94,8 +96,10 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   }, [draft]);
   const [saving, setSaving] = useState(false);
   const [gateMsg, setGateMsg] = useState<string | null>(null);
+  const [showCloseOut, setShowCloseOut] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [copied, setCopied] = useState(false);
 
   function set<K extends keyof Ad>(key: K, value: Ad[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -170,6 +174,17 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
       return;
     }
     setGateMsg(null);
+
+    // Closing out (Winner / Killed) requires the forced-capture modal.
+    if (target === "Winner / Killed") {
+      if (!can(myRole, "edit_performance")) {
+        setGateMsg("You don’t have permission to close out this ad.");
+        return;
+      }
+      setShowCloseOut(true);
+      return;
+    }
+
     const { allowed, missing } = checkMove(draft, draft.stage, target);
 
     if (!allowed) {
@@ -204,6 +219,39 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
     setSaveStatus("saved");
   }
 
+  // Called by the CloseOutModal once the user fills the required capture.
+  async function confirmCloseOut(data: {
+    result: "Winner" | "Killed";
+    spend: number;
+    purchases: number;
+    cvr: number;
+    learning: string;
+  }) {
+    const updated = {
+      ...draft,
+      stage: "Winner / Killed",
+      result: data.result,
+      spend: data.spend,
+      purchases: data.purchases,
+      cvr: data.cvr,
+      learning: data.learning,
+    };
+    setDraft(updated);
+    setSaving(true);
+    setSaveStatus("saving");
+    await onSave(ad.id, {
+      stage: "Winner / Killed",
+      result: data.result,
+      spend: data.spend,
+      purchases: data.purchases,
+      cvr: data.cvr,
+      learning: data.learning,
+    });
+    setSaving(false);
+    setSaveStatus("saved");
+    setShowCloseOut(false);
+  }
+
   const personas = valuesFor("persona");
   const emotions = valuesFor("core_emotion");
   const problems = valuesFor("problem");
@@ -232,6 +280,37 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
     if (v.trim() === "") return null;
     const n = Number(v);
     return Number.isNaN(n) ? null : n;
+  }
+
+  // Build the ad-set name string from the boss's format.
+  // Empty fields show a [placeholder] so it's clear what's missing.
+  function buildAdSetName(): string {
+    const wl = (draft.whitelisting_pages ?? []).filter((u) => u && u.trim());
+    const part = (val: string | null | undefined, ph: string) =>
+      val && String(val).trim() ? String(val) : `[${ph}]`;
+
+    return [
+      draft.dtc_number != null ? `DTC #${draft.dtc_number}` : "[DTC #]",
+      part(draft.format, "format"),
+      wl.length > 0 ? wl.join(" & ") : "[whitelisting]",
+      part(draft.concept, "concept"),
+      part(draft.sub_avatar, "sub_avatar"),
+      part(draft.angle, "angle"),
+      part(draft.awareness, "awareness"),
+      part(draft.ad_type, "ad_type"),
+      `Editor: ${draft.assigned_editor || "[editor]"}`,
+      `Strategist: ${draft.assigned_strategist || "[strategist]"}`,
+    ].join(" || ");
+  }
+
+  async function copyAdSetName() {
+    try {
+      await navigator.clipboard.writeText(buildAdSetName());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard may be blocked; ignore silently
+    }
   }
 
   return (
@@ -407,6 +486,38 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
           )}
         </div>
 
+        {/* ---- AD-SET NAME (auto-generated) — Media Buyer + Founder only ---- */}
+        {showAdSetName && (
+        <div style={{
+          backgroundColor: "var(--nested)", border: "1px solid var(--border)",
+          borderRadius: "10px", padding: "12px 14px", marginBottom: "20px",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+            <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>Ad-set name</span>
+            <button
+              onClick={copyAdSetName}
+              style={{
+                display: "flex", alignItems: "center", gap: "5px",
+                padding: "4px 10px", backgroundColor: "var(--raised)",
+                border: "1px solid var(--border)", borderRadius: "6px",
+                color: copied ? "#4ade80" : "var(--text-secondary)",
+                fontSize: "12px", cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              {copied ? <Check size={13} /> : <Copy size={13} />}
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <div style={{
+            fontSize: "12px", color: "var(--text)", lineHeight: 1.5,
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            wordBreak: "break-word",
+          }}>
+            {buildAdSetName()}
+          </div>
+        </div>
+        )}
+
         {/* ---- ZONE 1: STRATEGY ---- */}
         <div style={sectionTitle}>Zone 1 · Strategy</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "20px", borderLeft: "2px solid #7c3aed", paddingLeft: "14px", opacity: allowZone1 ? 1 : 0.55, pointerEvents: allowZone1 ? "auto" : "none" }}>
@@ -463,6 +574,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
 
         {/* ---- ZONE 2: OPERATIONAL ---- */}
         <div style={sectionTitle}>Zone 2 · Operational</div>
+        <div style={{ opacity: allowZone2 ? 1 : 0.55, pointerEvents: allowZone2 ? "auto" : "none" }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "16px" }}>
           <div>
             <label style={labelStyle}>Strategist</label>
@@ -589,6 +701,8 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
           </button>
         </div>
 
+        </div>{/* end Zone 2 dim wrapper */}
+
         {/* Notes */}
         <div style={{ marginBottom: "20px" }}>
           <label style={labelStyle}>Notes</label>
@@ -710,6 +824,14 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
           </div>
         </div>
       </div>
-    </div>
+    
+      {showCloseOut && (
+        <CloseOutModal
+          ad={draft}
+          onClose={() => setShowCloseOut(false)}
+          onConfirm={confirmCloseOut}
+        />
+      )}
+      </div>
   );
 }

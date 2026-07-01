@@ -3,9 +3,11 @@
 import { useState } from "react";
 import {
   LayoutGrid,
+  ListChecks,
   BarChart3,
   Lightbulb,
   FileText,
+  Users,
   Settings as SettingsIcon,
   LogOut,
 } from "lucide-react";
@@ -16,6 +18,8 @@ import { useMyRole } from "@/app/hooks/useMyRole";
 import { roleBadgeStyle } from "@/app/lib/roleStyles";
 
 import PipelineView from "@/app/components/views/PipelineView";
+import MyQueueView from "@/app/components/views/MyQueueView";
+import WorkloadView from "@/app/components/views/WorkloadView";
 import AnalyticsView from "@/app/components/views/AnalyticsView";
 import LearningsView from "@/app/components/views/LearningsView";
 import ReportsView from "@/app/components/views/ReportsView";
@@ -25,9 +29,11 @@ import SettingsView from "@/app/components/views/SettingsView";
 // `label` is what the user sees, `icon` is the Lucide line-icon.
 const NAV_ITEMS = [
   { key: "pipeline", label: "Pipeline", icon: LayoutGrid },
+  { key: "myqueue", label: "My Queue", icon: ListChecks },
   { key: "analytics", label: "Analytics", icon: BarChart3 },
   { key: "learnings", label: "Learnings", icon: Lightbulb },
   { key: "reports", label: "Reports", icon: FileText },
+  { key: "workload", label: "Workload", icon: Users },
   { key: "settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
@@ -58,6 +64,10 @@ export default function Home() {
     switch (activeView) {
       case "pipeline":
         return <PipelineView />;
+      case "myqueue":
+        return <MyQueueView />;
+      case "workload":
+        return <WorkloadView />;
       case "analytics":
         return <AnalyticsView />;
       case "learnings":
