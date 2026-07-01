@@ -6,6 +6,7 @@ import { useSettings } from "@/app/hooks/useSettings";
 import { useMyRole } from "@/app/hooks/useMyRole";
 import { can } from "@/app/lib/permissions";
 import CloseOutModal from "@/app/components/modals/CloseOutModal";
+import PreLaunchModal from "@/app/components/modals/PreLaunchModal";
 import { STAGE_ORDER, checkMove, stageIndex } from "@/app/lib/gates";
 import type { Ad } from "@/app/types";
 
@@ -97,6 +98,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const [saving, setSaving] = useState(false);
   const [gateMsg, setGateMsg] = useState<string | null>(null);
   const [showCloseOut, setShowCloseOut] = useState(false);
+  const [showPreLaunch, setShowPreLaunch] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [copied, setCopied] = useState(false);
@@ -175,6 +177,22 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
     }
     setGateMsg(null);
 
+    // Ready to Launch -> Testing requires the pre-launch checklist (Media Buyer/Founder).
+    if (draft.stage === "Ready to Launch" && target === "Testing") {
+      if (myRole !== "Media Buyer" && myRole !== "Founder") {
+        setGateMsg("Only the Media Buyer can move an ad into Testing (pre-launch checklist).");
+        return;
+      }
+      // Still enforce the field gate (destination URL) before showing the checklist.
+      const { allowed, missing } = checkMove(draft, draft.stage, target);
+      if (!allowed) {
+        setGateMsg("Can’t move to Testing yet. Fill first: " + missing.join(", ") + ".");
+        return;
+      }
+      setShowPreLaunch(true);
+      return;
+    }
+
     // Closing out (Winner / Killed) requires the forced-capture modal.
     if (target === "Winner / Killed") {
       if (!can(myRole, "edit_performance")) {
@@ -217,6 +235,18 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
     });
     setSaving(false);
     setSaveStatus("saved");
+  }
+
+  // Called by the PreLaunchModal once all checks pass.
+  async function confirmPreLaunch() {
+    const updated = { ...draft, stage: "Testing" };
+    setDraft(updated);
+    setSaving(true);
+    setSaveStatus("saving");
+    await onSave(ad.id, { stage: "Testing" });
+    setSaving(false);
+    setSaveStatus("saved");
+    setShowPreLaunch(false);
   }
 
   // Called by the CloseOutModal once the user fills the required capture.
@@ -715,6 +745,25 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
         </div>
 
         {/* ---- END OF LIFE: PERFORMANCE + LEARNING ---- */}
+        {/* ---- GENERATED COPY (from Copy Agent) ---- */}
+        {(draft.selected_headline || draft.selected_ad_copy) && (
+          <div style={{ marginBottom: "20px", backgroundColor: "var(--nested)", border: "1px solid var(--border)", borderRadius: "10px", padding: "14px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "10px" }}>Generated copy</div>
+            {draft.selected_headline && (
+              <div style={{ marginBottom: "10px" }}>
+                <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>Headline</div>
+                <div style={{ fontSize: "14px", color: "var(--text)", lineHeight: 1.5 }}>{draft.selected_headline}</div>
+              </div>
+            )}
+            {draft.selected_ad_copy && (
+              <div>
+                <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>Ad copy</div>
+                <div style={{ fontSize: "14px", color: "var(--text)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{draft.selected_ad_copy}</div>
+              </div>
+            )}
+          </div>
+        )}
+
         <div style={sectionTitle}>Close-out · Performance &amp; Learning</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "8px", opacity: allowPerf ? 1 : 0.55, pointerEvents: allowPerf ? "auto" : "none" }}>
           <div>
@@ -825,6 +874,14 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
         </div>
       </div>
     
+      {showPreLaunch && (
+        <PreLaunchModal
+          ad={draft}
+          onClose={() => setShowPreLaunch(false)}
+          onConfirm={confirmPreLaunch}
+        />
+      )}
+
       {showCloseOut && (
         <CloseOutModal
           ad={draft}

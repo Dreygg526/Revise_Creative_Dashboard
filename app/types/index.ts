@@ -54,7 +54,9 @@ export interface Ad {
   spend: number | null;
   purchases: number | null;
   cvr: number | null;
-  learning: string | null;       // required one-line learning at close
+  learning: string | null;
+  selected_headline: string | null;
+  selected_ad_copy: string | null;
 
   // ---- Audit ----
   created_by: string | null;
@@ -108,15 +110,13 @@ export type Role =
   | 'Founder'
   | 'Strategist'
   | 'Editor'
-  | 'Media Buyer'
-  | 'Graphic Designer';
+  | 'Designer'
+  | 'Media Buyer';
 
 export interface TeamMember {
   id: string;
   name: string;
   role: Role;
-  email: string | null;
-  status: string;           // 'active' | 'invited'
   created_at: string;
 }
 

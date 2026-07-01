@@ -8,6 +8,8 @@ import {
   Lightbulb,
   FileText,
   Users,
+  Sparkles,
+  PenLine,
   Settings as SettingsIcon,
   LogOut,
 } from "lucide-react";
@@ -20,6 +22,8 @@ import { roleBadgeStyle } from "@/app/lib/roleStyles";
 import PipelineView from "@/app/components/views/PipelineView";
 import MyQueueView from "@/app/components/views/MyQueueView";
 import WorkloadView from "@/app/components/views/WorkloadView";
+import IdeasView from "@/app/components/views/IdeasView";
+import CopyAgentView from "@/app/components/views/CopyAgentView";
 import AnalyticsView from "@/app/components/views/AnalyticsView";
 import LearningsView from "@/app/components/views/LearningsView";
 import ReportsView from "@/app/components/views/ReportsView";
@@ -33,6 +37,8 @@ const NAV_ITEMS = [
   { key: "analytics", label: "Analytics", icon: BarChart3 },
   { key: "learnings", label: "Learnings", icon: Lightbulb },
   { key: "reports", label: "Reports", icon: FileText },
+  { key: "ideas", label: "Ideas", icon: Sparkles },
+  { key: "copyagent", label: "Copy Agent", icon: PenLine },
   { key: "workload", label: "Workload", icon: Users },
   { key: "settings", label: "Settings", icon: SettingsIcon },
 ] as const;
@@ -68,6 +74,10 @@ export default function Home() {
         return <MyQueueView />;
       case "workload":
         return <WorkloadView />;
+      case "ideas":
+        return <IdeasView />;
+      case "copyagent":
+        return <CopyAgentView />;
       case "analytics":
         return <AnalyticsView />;
       case "learnings":
