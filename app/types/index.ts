@@ -47,6 +47,8 @@ export interface Ad {
   whitelisting_pages: string[];              // multiple entries
   notes: string | null;
   revision_count: number;
+  revision_note: string | null;
+  script_hook: string | null;
 
   // ---- END-OF-LIFE: PERFORMANCE + LEARNING ----
   // (nullable; app enforces "must fill to mark Winner/Killed")
@@ -110,13 +112,15 @@ export type Role =
   | 'Founder'
   | 'Strategist'
   | 'Editor'
-  | 'Designer'
+  | 'Graphic Designer'
   | 'Media Buyer';
 
 export interface TeamMember {
   id: string;
   name: string;
+  email: string | null;
   role: Role;
+  status: string;          // 'active' | 'invited'
   created_at: string;
 }
 

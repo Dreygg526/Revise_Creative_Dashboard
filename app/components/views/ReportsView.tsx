@@ -9,6 +9,7 @@ const ROLE_OPTIONS = [
   { key: "assigned_strategist", label: "Strategist" },
   { key: "assigned_editor", label: "Editor" },
   { key: "assigned_media_buyer", label: "Media Buyer" },
+  { key: "assigned_designer", label: "Designer" },
 ] as const;
 
 type RoleKey = (typeof ROLE_OPTIONS)[number]["key"];
@@ -31,7 +32,7 @@ export default function ReportsView() {
     // Group ads by the chosen person field.
     const map = new Map<string, Ad[]>();
     for (const ad of ads) {
-      const raw = ad[roleKey as keyof Ad];
+      const raw = (ad as unknown as Record<string, unknown>)[roleKey];
       const name = raw && String(raw).trim() ? String(raw) : "— Unassigned";
       if (!map.has(name)) map.set(name, []);
       map.get(name)!.push(ad);
@@ -115,23 +116,24 @@ export default function ReportsView() {
       {!loading && !error && (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
           {/* Column header */}
-          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr 90px 90px 90px", gap: "16px", padding: "0 16px", fontSize: "11px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr 80px 80px 70px 90px", gap: "16px", padding: "0 16px", fontSize: "11px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
             <div>Name</div>
             <div>Winner share</div>
+            <div style={{ textAlign: "right" }}>Winners</div>
             <div style={{ textAlign: "right" }}>Win rate</div>
             <div style={{ textAlign: "right" }}>Ads</div>
             <div style={{ textAlign: "right" }}>Spend</div>
           </div>
 
           {rows.map((r) => {
-            // Bar width is relative to the top performer's winners.
-            const barPct = (r.winners / maxWinners) * 100;
+            // Bar length = this person's share of all winners (matches the % shown).
+            const barPct = r.winnerShare;
             return (
               <div
                 key={r.name}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "160px 1fr 90px 90px 90px",
+                  gridTemplateColumns: "160px 1fr 80px 80px 70px 90px",
                   gap: "16px",
                   alignItems: "center",
                   backgroundColor: "var(--card)",
@@ -162,9 +164,14 @@ export default function ReportsView() {
                   </span>
                 </div>
 
+                {/* Winners count */}
+                <div style={{ textAlign: "right", fontSize: "13px", fontWeight: 600, color: r.winners > 0 ? "#4ade80" : "var(--text-muted)" }}>
+                  {r.winners}
+                </div>
+
                 {/* Win rate */}
                 <div style={{ textAlign: "right", fontSize: "13px", color: r.winRate != null ? "var(--text)" : "var(--text-muted)" }}>
-                  {r.winRate != null ? fmt(r.winRate) + "%" : "—"}
+                  {r.winRate != null ? fmt(r.winRate) + "%" : "—"}{r.closed > 0 ? ` (${r.closed})` : ""}
                 </div>
 
                 {/* Ads */}
@@ -187,7 +194,7 @@ export default function ReportsView() {
       )}
 
       <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--text-muted)" }}>
-        Winner share = each person’s portion of all winning ads. Bar length is relative to the top performer.
+        Winner share = each person’s portion of all winning ads (bar length matches this). Win rate shows % of their closed ads that won, with the closed count in parentheses.
       </div>
     </div>
   );

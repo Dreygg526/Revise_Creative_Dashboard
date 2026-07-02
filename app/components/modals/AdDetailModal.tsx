@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { X, Lock, ArrowRight, Trash2, Plus, Copy, Check } from "lucide-react";
+import { X, Lock, ArrowRight, Trash2, Plus, Copy, Check, Send, RotateCcw } from "lucide-react";
 import { useSettings } from "@/app/hooks/useSettings";
 import { useMyRole } from "@/app/hooks/useMyRole";
 import { can } from "@/app/lib/permissions";
 import CloseOutModal from "@/app/components/modals/CloseOutModal";
 import PreLaunchModal from "@/app/components/modals/PreLaunchModal";
 import { STAGE_ORDER, checkMove, stageIndex } from "@/app/lib/gates";
+import ScriptSection from "@/app/components/modals/ScriptSection";
 import type { Ad } from "@/app/types";
 
 interface AdDetailModalProps {
@@ -55,6 +56,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const allowZone2 = can(myRole, "edit_zone2");
   const allowPerf = can(myRole, "edit_performance");
   const allowMove = can(myRole, "move_stage");
+  const allowScript = can(myRole, "edit_zone1"); // Founder + Strategist write scripts
   const allowDelete = can(myRole, "delete_ad");
   const showAdSetName = myRole === "Media Buyer" || myRole === "Founder";
 
@@ -102,6 +104,9 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [copied, setCopied] = useState(false);
+  const [showRevisionInput, setShowRevisionInput] = useState(false);
+  const [revisionText, setRevisionText] = useState("");
+  const [workflowMsg, setWorkflowMsg] = useState<string | null>(null);
 
   function set<K extends keyof Ad>(key: K, value: Ad[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -142,6 +147,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
       priority: d.priority,
       assigned_strategist: d.assigned_strategist,
       assigned_editor: d.assigned_editor,
+      script_hook: d.script_hook,
       assigned_media_buyer: d.assigned_media_buyer,
       format: d.format,
       ad_type: d.ad_type,
@@ -238,6 +244,43 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   }
 
   // Called by the PreLaunchModal once all checks pass.
+  // ---- Submit / Approve / Request-revision workflow ----
+  const canReview = can(myRole, "move_stage"); // Founder + Strategist + Media Buyer; we tighten below
+
+  async function submitForReview() {
+    setWorkflowMsg(null);
+    // Require both a specific strategist and editor so the ping has a target.
+    if (!draft.assigned_strategist) { setWorkflowMsg("Assign a strategist before submitting for review."); return; }
+    if (!draft.assigned_editor) { setWorkflowMsg("Assign an editor before submitting for review."); return; }
+    const updated = { ...draft, stage: "Review" };
+    setDraft(updated);
+    await onSave(ad.id, { stage: "Review", assigned_strategist: draft.assigned_strategist, assigned_editor: draft.assigned_editor });
+  }
+
+  async function approve() {
+    setWorkflowMsg(null);
+    const updated = { ...draft, stage: "Ready to Launch" };
+    setDraft(updated);
+    await onSave(ad.id, { stage: "Ready to Launch" });
+  }
+
+  async function requestRevision() {
+    if (!revisionText.trim()) { setWorkflowMsg("Add a short note describing what needs to change."); return; }
+    setWorkflowMsg(null);
+    const newCount = (draft.revision_count ?? 0) + 1;
+    const updated = { ...draft, stage: "In Production", revision_note: revisionText.trim(), revision_count: newCount };
+    setDraft(updated);
+    await onSave(ad.id, { stage: "In Production", revision_note: revisionText.trim(), revision_count: newCount });
+    setShowRevisionInput(false);
+    setRevisionText("");
+  }
+
+  async function clearRevisionNote() {
+    const updated = { ...draft, revision_note: null };
+    setDraft(updated);
+    await onSave(ad.id, { revision_note: null });
+  }
+
   async function confirmPreLaunch() {
     const updated = { ...draft, stage: "Testing" };
     setDraft(updated);
@@ -300,6 +343,12 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
 
   // Safety: never render if we somehow have no ad/draft.
   if (!draft) return null;
+
+  const workflowBtn = (bg: string, color: string): React.CSSProperties => ({
+    display: "flex", alignItems: "center", gap: "6px", padding: "7px 12px",
+    borderRadius: "6px", border: "none", backgroundColor: bg, color,
+    fontSize: "13px", fontWeight: 500, cursor: "pointer", fontFamily: "inherit",
+  });
 
   const curIdx = stageIndex(draft.stage);
   const nextStage = curIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[curIdx + 1] : null;
@@ -434,6 +483,19 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
           </button>
         </div>
 
+        {/* ---- Revision-needed banner ---- */}
+        {draft.revision_note && (
+          <div style={{ marginBottom: "16px", backgroundColor: "#450a0a", border: "1px solid #7f1d1d", borderRadius: "10px", padding: "12px 14px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+              <span style={{ fontSize: "11px", fontWeight: 600, color: "#fca5a5", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Revision requested{draft.revision_count ? ` · #${draft.revision_count}` : ""}
+              </span>
+              <button onClick={clearRevisionNote} style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>Clear</button>
+            </div>
+            <div style={{ fontSize: "14px", color: "var(--text)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{draft.revision_note}</div>
+          </div>
+        )}
+
         {/* ---- Stage control ---- */}
         <div
           style={{
@@ -512,6 +574,46 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
             >
               <Lock size={15} style={{ flexShrink: 0, marginTop: "1px" }} />
               <span>{gateMsg}</span>
+            </div>
+          )}
+
+          {/* ---- Workflow actions ---- */}
+          <div style={{ marginTop: "12px", display: "flex", flexWrap: "wrap", gap: "8px" }}>
+            {draft.stage === "In Production" && (
+              <button onClick={submitForReview} style={workflowBtn("#2563eb", "#fff")}>
+                <Send size={13} /> Submit for review
+              </button>
+            )}
+            {draft.stage === "Review" && canReview && (
+              <>
+                <button onClick={approve} style={workflowBtn("#16a34a", "#fff")}>
+                  <Check size={13} /> Approve
+                </button>
+                <button onClick={() => setShowRevisionInput((v) => !v)} style={workflowBtn("var(--raised)", "#fca5a5")}>
+                  <RotateCcw size={13} /> Request revision
+                </button>
+              </>
+            )}
+          </div>
+
+          {showRevisionInput && (
+            <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              <textarea
+                value={revisionText}
+                onChange={(e) => setRevisionText(e.target.value)}
+                placeholder="What needs to change? (the assigned editor will see this)"
+                style={{ ...inputStyle, minHeight: "60px", resize: "vertical" }}
+              />
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button onClick={requestRevision} style={workflowBtn("#dc2626", "#fff")}>Send back for revision</button>
+                <button onClick={() => { setShowRevisionInput(false); setRevisionText(""); }} style={{ ...workflowBtn("transparent", "var(--text-secondary)"), border: "1px solid var(--border)" }}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {workflowMsg && (
+            <div style={{ marginTop: "10px", backgroundColor: "#422006", border: "1px solid #854d0e", color: "#fcd34d", padding: "9px 12px", borderRadius: "8px", fontSize: "13px" }}>
+              {workflowMsg}
             </div>
           )}
         </div>
@@ -745,6 +847,14 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
         </div>
 
         {/* ---- END OF LIFE: PERFORMANCE + LEARNING ---- */}
+        {/* ---- SCRIPT (scene-by-scene) ---- */}
+        <ScriptSection
+          adId={ad.id}
+          scriptHook={draft.script_hook}
+          onHookChange={(v) => set("script_hook", v)}
+          canEdit={allowScript}
+        />
+
         {/* ---- GENERATED COPY (from Copy Agent) ---- */}
         {(draft.selected_headline || draft.selected_ad_copy) && (
           <div style={{ marginBottom: "20px", backgroundColor: "var(--nested)", border: "1px solid var(--border)", borderRadius: "10px", padding: "14px" }}>

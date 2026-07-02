@@ -121,6 +121,16 @@ export default function MyQueueView() {
                       </div>
 
                       <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        {ad.stage === "Review" && (myRole === "Strategist" || isFounder) && (
+                          <span style={{ fontSize: "10px", fontWeight: 600, color: "#93c5fd", backgroundColor: "#172554", padding: "2px 8px", borderRadius: "10px" }}>
+                            Needs review
+                          </span>
+                        )}
+                        {ad.revision_note && (
+                          <span style={{ fontSize: "10px", fontWeight: 600, color: "#fca5a5", backgroundColor: "#450a0a", padding: "2px 8px", borderRadius: "10px" }}>
+                            Needs revision
+                          </span>
+                        )}
                         {overdue && (
                           <span style={{ fontSize: "10px", fontWeight: 600, color: "#fca5a5", backgroundColor: "#450a0a", padding: "2px 8px", borderRadius: "10px" }}>
                             Overdue
