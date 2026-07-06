@@ -8,7 +8,6 @@ import { can } from "@/app/lib/permissions";
 import CloseOutModal from "@/app/components/modals/CloseOutModal";
 import PreLaunchModal from "@/app/components/modals/PreLaunchModal";
 import { STAGE_ORDER, checkMove, stageIndex } from "@/app/lib/gates";
-import ScriptSection from "@/app/components/modals/ScriptSection";
 import type { Ad } from "@/app/types";
 
 interface AdDetailModalProps {
@@ -49,14 +48,12 @@ const sectionTitle: React.CSSProperties = {
 };
 
 export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetailModalProps) {
-  const { valuesFor, strategistOptions, editorOptions, mediaBuyerOptions } = useSettings();
+  const { valuesFor, strategistOptions, editorOptions } = useSettings();
   const myRole = useMyRole();
   const allowTitle = can(myRole, "edit_title");
   const allowZone1 = can(myRole, "edit_zone1");
   const allowZone2 = can(myRole, "edit_zone2");
-  const allowPerf = can(myRole, "edit_performance");
   const allowMove = can(myRole, "move_stage");
-  const allowScript = can(myRole, "edit_zone1"); // Founder + Strategist write scripts
   const allowDelete = can(myRole, "delete_ad");
   const showAdSetName = myRole === "Media Buyer" || myRole === "Founder";
 
@@ -104,8 +101,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [copied, setCopied] = useState(false);
-  const [showRevisionInput, setShowRevisionInput] = useState(false);
-  const [revisionText, setRevisionText] = useState("");
   const [workflowMsg, setWorkflowMsg] = useState<string | null>(null);
 
   function set<K extends keyof Ad>(key: K, value: Ad[K]) {
@@ -138,20 +133,15 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
       ad_name: d.ad_name,
       product: d.product,
       persona: d.persona,
-      sub_avatar: d.sub_avatar,
       core_emotion: d.core_emotion,
       problem: d.problem,
       awareness: d.awareness,
       angle: d.angle,
-      concept: d.concept,
       priority: d.priority,
       assigned_strategist: d.assigned_strategist,
       assigned_editor: d.assigned_editor,
-      script_hook: d.script_hook,
-      assigned_media_buyer: d.assigned_media_buyer,
       format: d.format,
       ad_type: d.ad_type,
-      content_source: d.content_source,
       due_date: d.due_date,
       brief_link: d.brief_link,
       frame_io_link: d.frame_io_link,
@@ -265,20 +255,12 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   }
 
   async function requestRevision() {
-    if (!revisionText.trim()) { setWorkflowMsg("Add a short note describing what needs to change."); return; }
     setWorkflowMsg(null);
     const newCount = (draft.revision_count ?? 0) + 1;
-    const updated = { ...draft, stage: "In Production", revision_note: revisionText.trim(), revision_count: newCount };
+    const updated = { ...draft, stage: "In Production", revision_count: newCount };
     setDraft(updated);
-    await onSave(ad.id, { stage: "In Production", revision_note: revisionText.trim(), revision_count: newCount });
-    setShowRevisionInput(false);
-    setRevisionText("");
-  }
-
-  async function clearRevisionNote() {
-    const updated = { ...draft, revision_note: null };
-    setDraft(updated);
-    await onSave(ad.id, { revision_note: null });
+    // Feedback is given in Frame.io, so no in-app note is stored.
+    await onSave(ad.id, { stage: "In Production", revision_count: newCount });
   }
 
   async function confirmPreLaunch() {
@@ -331,15 +313,11 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const awarenesses = valuesFor("awareness");
   const formats = valuesFor("format");
   const priorities = valuesFor("priority");
-  const subAvatars = valuesFor("sub_avatar");
   const angles = valuesFor("angle");
-  const concepts = valuesFor("concept");
   const adTypes = valuesFor("ad_type");
-  const contentSources = valuesFor("content_source");
   const products = valuesFor("product");
   const editors = editorOptions;
   const strategists = strategistOptions;
-  const mediaBuyers = mediaBuyerOptions;
 
   // Safety: never render if we somehow have no ad/draft.
   if (!draft) return null;
@@ -355,11 +333,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const isClosed = draft.stage === "Winner / Killed";
 
   // Number input helper.
-  function numOrNull(v: string): number | null {
-    if (v.trim() === "") return null;
-    const n = Number(v);
-    return Number.isNaN(n) ? null : n;
-  }
 
   // Build the ad-set name string from the boss's format.
   // Empty fields show a [placeholder] so it's clear what's missing.
@@ -372,8 +345,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
       draft.dtc_number != null ? `DTC #${draft.dtc_number}` : "[DTC #]",
       part(draft.format, "format"),
       wl.length > 0 ? wl.join(" & ") : "[whitelisting]",
-      part(draft.concept, "concept"),
-      part(draft.sub_avatar, "sub_avatar"),
       part(draft.angle, "angle"),
       part(draft.awareness, "awareness"),
       part(draft.ad_type, "ad_type"),
@@ -483,19 +454,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
           </button>
         </div>
 
-        {/* ---- Revision-needed banner ---- */}
-        {draft.revision_note && (
-          <div style={{ marginBottom: "16px", backgroundColor: "#450a0a", border: "1px solid #7f1d1d", borderRadius: "10px", padding: "12px 14px" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
-              <span style={{ fontSize: "11px", fontWeight: 600, color: "#fca5a5", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                Revision requested{draft.revision_count ? ` · #${draft.revision_count}` : ""}
-              </span>
-              <button onClick={clearRevisionNote} style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>Clear</button>
-            </div>
-            <div style={{ fontSize: "14px", color: "var(--text)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{draft.revision_note}</div>
-          </div>
-        )}
-
         {/* ---- Stage control ---- */}
         <div
           style={{
@@ -589,27 +547,12 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
                 <button onClick={approve} style={workflowBtn("#16a34a", "#fff")}>
                   <Check size={13} /> Approve
                 </button>
-                <button onClick={() => setShowRevisionInput((v) => !v)} style={workflowBtn("var(--raised)", "#fca5a5")}>
+                <button onClick={requestRevision} style={workflowBtn("var(--raised)", "#fca5a5")}>
                   <RotateCcw size={13} /> Request revision
                 </button>
               </>
             )}
           </div>
-
-          {showRevisionInput && (
-            <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
-              <textarea
-                value={revisionText}
-                onChange={(e) => setRevisionText(e.target.value)}
-                placeholder="What needs to change? (the assigned editor will see this)"
-                style={{ ...inputStyle, minHeight: "60px", resize: "vertical" }}
-              />
-              <div style={{ display: "flex", gap: "8px" }}>
-                <button onClick={requestRevision} style={workflowBtn("#dc2626", "#fff")}>Send back for revision</button>
-                <button onClick={() => { setShowRevisionInput(false); setRevisionText(""); }} style={{ ...workflowBtn("transparent", "var(--text-secondary)"), border: "1px solid var(--border)" }}>Cancel</button>
-              </div>
-            </div>
-          )}
 
           {workflowMsg && (
             <div style={{ marginTop: "10px", backgroundColor: "#422006", border: "1px solid #854d0e", color: "#fcd34d", padding: "9px 12px", borderRadius: "8px", fontSize: "13px" }}>
@@ -661,13 +604,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
             </select>
           </div>
           <div>
-            <label style={labelStyle}>Sub avatar</label>
-            <select style={inputStyle} value={draft.sub_avatar ?? ""} onChange={(e) => set("sub_avatar", e.target.value || null)}>
-              <option value="">—</option>
-              {subAvatars.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <div>
             <label style={labelStyle}>Core Emotion</label>
             <select style={inputStyle} value={draft.core_emotion ?? ""} onChange={(e) => set("core_emotion", e.target.value || null)}>
               <option value="">—</option>
@@ -695,13 +631,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
               {angles.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
-          <div>
-            <label style={labelStyle}>Concept</label>
-            <select style={inputStyle} value={draft.concept ?? ""} onChange={(e) => set("concept", e.target.value || null)}>
-              <option value="">—</option>
-              {concepts.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
         </div>
 
         {/* ---- ZONE 2: OPERATIONAL ---- */}
@@ -723,14 +652,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
             </select>
           </div>
           <div>
-            <label style={labelStyle}>Media Buyer</label>
-            <select style={inputStyle} value={draft.assigned_media_buyer ?? ""} onChange={(e) => set("assigned_media_buyer", e.target.value || null)}>
-              <option value="">—</option>
-              {mediaBuyers.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
-            </select>
-          </div>
-
-          <div>
             <label style={labelStyle}>Product</label>
             <select style={inputStyle} value={draft.product ?? ""} onChange={(e) => set("product", e.target.value || null)}>
               <option value="">—</option>
@@ -749,13 +670,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
             <select style={inputStyle} value={draft.ad_type ?? ""} onChange={(e) => set("ad_type", e.target.value || null)}>
               <option value="">—</option>
               {adTypes.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={labelStyle}>Content source</label>
-            <select style={inputStyle} value={draft.content_source ?? ""} onChange={(e) => set("content_source", e.target.value || null)}>
-              <option value="">—</option>
-              {contentSources.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
           <div>
@@ -847,14 +761,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
         </div>
 
         {/* ---- END OF LIFE: PERFORMANCE + LEARNING ---- */}
-        {/* ---- SCRIPT (scene-by-scene) ---- */}
-        <ScriptSection
-          adId={ad.id}
-          scriptHook={draft.script_hook}
-          onHookChange={(v) => set("script_hook", v)}
-          canEdit={allowScript}
-        />
-
         {/* ---- GENERATED COPY (from Copy Agent) ---- */}
         {(draft.selected_headline || draft.selected_ad_copy) && (
           <div style={{ marginBottom: "20px", backgroundColor: "var(--nested)", border: "1px solid var(--border)", borderRadius: "10px", padding: "14px" }}>
@@ -871,46 +777,6 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
                 <div style={{ fontSize: "14px", color: "var(--text)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{draft.selected_ad_copy}</div>
               </div>
             )}
-          </div>
-        )}
-
-        <div style={sectionTitle}>Close-out · Performance &amp; Learning</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "8px", opacity: allowPerf ? 1 : 0.55, pointerEvents: allowPerf ? "auto" : "none" }}>
-          <div>
-            <label style={labelStyle}>Result</label>
-            <select style={inputStyle} value={draft.result ?? ""} onChange={(e) => set("result", e.target.value || null)}>
-              <option value="">—</option>
-              <option value="Winner">Winner</option>
-              <option value="Killed">Killed</option>
-            </select>
-          </div>
-          <div>
-            <label style={labelStyle}>Spend</label>
-            <input style={inputStyle} value={draft.spend ?? ""} onChange={(e) => set("spend", numOrNull(e.target.value))} inputMode="decimal" />
-          </div>
-          <div>
-            <label style={labelStyle}>Purchases</label>
-            <input style={inputStyle} value={draft.purchases ?? ""} onChange={(e) => set("purchases", numOrNull(e.target.value))} inputMode="decimal" />
-          </div>
-          <div>
-            <label style={labelStyle}>CVR (%)</label>
-            <input style={inputStyle} value={draft.cvr ?? ""} onChange={(e) => set("cvr", numOrNull(e.target.value))} inputMode="decimal" />
-          </div>
-        </div>
-        <div style={{ marginBottom: "20px" }}>
-          <label style={labelStyle}>Learning (required to close)</label>
-          <textarea
-            style={{ ...inputStyle, minHeight: "60px", resize: "vertical" }}
-            value={draft.learning ?? ""}
-            onChange={(e) => set("learning", e.target.value || null)}
-            placeholder="One line: what did this ad teach us?"
-          />
-        </div>
-
-        {/* CPA preview (auto-calculated, never stored) */}
-        {draft.spend != null && draft.purchases != null && draft.purchases > 0 && (
-          <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "20px" }}>
-            CPA (auto): {(draft.spend / draft.purchases).toFixed(2)}
           </div>
         )}
 
