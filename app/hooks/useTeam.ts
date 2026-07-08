@@ -55,10 +55,22 @@ export function useTeam() {
     else setTeam((prev) => prev.map((m) => (m.id === id ? { ...m, role: role as TeamMember["role"] } : m)));
   }
 
-  async function removeMember(id: string) {
-    const { error } = await supabase.from("team_members").delete().eq("id", id);
-    if (error) setError(error.message);
-    else setTeam((prev) => prev.filter((m) => m.id !== id));
+  // Full delete: removes the Supabase Auth login AND the team_members row,
+  // via the secure server route (service_role key stays server-side).
+  async function removeMember(id: string, email: string): Promise<{ error: string | null }> {
+    try {
+      const res = await fetch("/api/delete-member", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const json = await res.json();
+      if (!res.ok) return { error: json.error || "Delete failed." };
+      setTeam((prev) => prev.filter((m) => m.id !== id));
+      return { error: null };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : "Delete failed." };
+    }
   }
 
   return { team, loading, error, fetchTeam, inviteMember, addMember, changeRole, removeMember };

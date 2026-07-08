@@ -11,7 +11,6 @@ const LIST_TYPES: { key: string; label: string }[] = [
   { key: "angle", label: "Angles" },
   { key: "concept", label: "Concepts" },
   { key: "ad_type", label: "Ad types" },
-  { key: "content_source", label: "Content sources" },
   { key: "product", label: "Products" },
   { key: "format", label: "Formats" },
   { key: "core_emotion", label: "Core emotions" },

@@ -235,7 +235,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
 
   // Called by the PreLaunchModal once all checks pass.
   // ---- Submit / Approve / Request-revision workflow ----
-  const canReview = can(myRole, "move_stage"); // Founder + Strategist + Media Buyer; we tighten below
+  const canReview = can(myRole, "review_ad"); // Founder + Strategist + Editor + Graphic Designer
 
   async function submitForReview() {
     setWorkflowMsg(null);

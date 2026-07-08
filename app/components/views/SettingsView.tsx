@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { UserPlus, Trash2, X } from "lucide-react";
 import { useTeam } from "@/app/hooks/useTeam";
+import type { TeamMember } from "@/app/types";
 import { roleBadgeStyle } from "@/app/lib/roleStyles";
 import { useMyRole } from "@/app/hooks/useMyRole";
 import { can } from "@/app/lib/permissions";
-import ListsManager from "@/app/components/ListsManager";
 
 const ROLES = ["Founder", "Strategist", "Editor", "Media Buyer", "Graphic Designer"];
 
@@ -21,10 +21,18 @@ const labelStyle: React.CSSProperties = {
 
 export default function SettingsView() {
   const { team, loading, inviteMember, changeRole, removeMember } = useTeam();
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function handleRemove(id: string, email: string) {
+    setDeleteError(null);
+    const { error } = await removeMember(id, email);
+    if (error) setDeleteError(error);
+    setConfirmDeleteId(null);
+  }
   const [showInvite, setShowInvite] = useState(false);
   const myRole = useMyRole();
   const canManageTeam = can(myRole, "manage_team");
-  const canManageLists = can(myRole, "manage_lists");
 
   return (
     <div>
@@ -62,9 +70,14 @@ export default function SettingsView() {
           </div>
         )}
 
+        {deleteError && (
+          <div style={{ marginBottom: "10px", fontSize: "13px", color: "#fca5a5", backgroundColor: "#450a0a", border: "1px solid #7f1d1d", borderRadius: "8px", padding: "9px 12px" }}>
+            {deleteError}
+          </div>
+        )}
         {!loading && team.length > 0 && (
           <div style={{ border: "1px solid var(--border)", borderRadius: "10px", overflow: "hidden" }}>
-            {team.map((m, i) => (
+            {team.map((m: TeamMember, i: number) => (
               <div
                 key={m.id}
                 style={{
@@ -111,15 +124,33 @@ export default function SettingsView() {
                   </select>
                 )}
 
-                {/* Remove — Founder only */}
+                {/* Remove — Founder only, with confirm */}
                 {canManageTeam && (
-                  <button
-                    onClick={() => removeMember(m.id)}
-                    style={{ background: "none", border: "1px solid var(--border)", borderRadius: "6px", color: "#fca5a5", cursor: "pointer", padding: "6px", display: "flex" }}
-                    aria-label="Remove member"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  confirmDeleteId === m.id ? (
+                    <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                      <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>Delete permanently?</span>
+                      <button
+                        onClick={() => handleRemove(m.id, m.email ?? "")}
+                        style={{ background: "#dc2626", border: "none", borderRadius: "6px", color: "#fff", cursor: "pointer", padding: "5px 10px", fontSize: "12px", fontFamily: "inherit" }}
+                      >
+                        Delete
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteId(null)}
+                        style={{ background: "none", border: "1px solid var(--border)", borderRadius: "6px", color: "var(--text-secondary)", cursor: "pointer", padding: "5px 10px", fontSize: "12px", fontFamily: "inherit" }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => { setConfirmDeleteId(m.id); setDeleteError(null); }}
+                      style={{ background: "none", border: "1px solid var(--border)", borderRadius: "6px", color: "#fca5a5", cursor: "pointer", padding: "6px", display: "flex" }}
+                      aria-label="Remove member"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )
                 )}
               </div>
             ))}
@@ -127,19 +158,12 @@ export default function SettingsView() {
         )}
       </div>
 
-      {/* Lists section */}
+      {/* Lists section placeholder (managed dropdowns come next) */}
       <div>
-        <h2 style={{ fontSize: "15px", fontWeight: 600, margin: "0 0 4px 0" }}>Lists</h2>
-        <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 16px 0" }}>
-          Manage the dropdown options used across the dashboard.
+        <h2 style={{ fontSize: "15px", fontWeight: 600, margin: "0 0 8px 0" }}>Lists</h2>
+        <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+          Managed dropdown lists (personas, angles, concepts, etc.) — coming next.
         </p>
-        {canManageLists ? (
-          <ListsManager />
-        ) : (
-          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-            You don’t have permission to edit lists.
-          </p>
-        )}
       </div>
 
       {showInvite && (

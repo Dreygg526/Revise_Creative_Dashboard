@@ -14,7 +14,8 @@ export type Action =
   | "delete_ad"
   | "batch_delete"
   | "manage_team"       // invite, change roles, remove members
-  | "manage_lists";     // Settings dropdown lists
+  | "manage_lists"      // Settings dropdown lists
+  | "review_ad";        // Approve / Request revision in Review stage
 
 // Normalize: Graphic Designer is treated as Editor.
 function normalize(role: string | null): string {
@@ -27,13 +28,14 @@ const RULES: Record<Action, string[]> = {
   create_ad:        ["Founder", "Strategist"],
   edit_zone1:       ["Founder", "Strategist"],
   edit_title:       ["Founder", "Strategist"],
-  edit_zone2:       ["Founder", "Strategist", "Media Buyer"],
+  edit_zone2:       ["Founder", "Strategist", "Editor", "Media Buyer"],
   move_stage:       ["Founder", "Strategist", "Editor", "Media Buyer"],
   edit_performance: ["Founder", "Strategist", "Media Buyer"],
   delete_ad:        ["Founder", "Strategist"],
   batch_delete:     ["Founder", "Strategist"],
   manage_team:      ["Founder"],            // Founder only
   manage_lists:     ["Founder", "Strategist"],
+  review_ad:        ["Founder", "Strategist", "Editor"], // Graphic Designer normalizes to Editor
 };
 
 // The core check: can this role perform this action?
