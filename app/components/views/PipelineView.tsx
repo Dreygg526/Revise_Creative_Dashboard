@@ -189,14 +189,17 @@ export default function PipelineView() {
       )}
 
       {!loading && !error && (
-        <div style={{ display: "flex", gap: "10px", paddingBottom: "8px", width: "100%" }}>
+        <div style={{ display: "flex", gap: "10px", paddingBottom: "8px", width: "100%", overflowX: "auto" }}>
           {stages.map((stage) => {
             const stageAds = adsInStage(stage);
             return (
               <div
                 key={stage}
                 style={{
-                  flex: "1 1 0", minWidth: 0,
+                  // Grow to fill on wide screens, but never shrink below a
+                  // readable width — the board scrolls horizontally instead of
+                  // squeezing columns until card content clips.
+                  flex: "1 0 250px", minWidth: "250px",
                   backgroundColor: "var(--nested)", border: "1px solid var(--border-soft)",
                   borderRadius: "10px", padding: "10px", display: "flex",
                   flexDirection: "column", gap: "8px",
@@ -397,7 +400,7 @@ function AdCard({
     return (
       <div style={{ display: "flex", gap: "8px", fontSize: "11px", lineHeight: 1.5 }}>
         <span style={{ color: "var(--text-muted)", width: "62px", flexShrink: 0 }}>{label}</span>
-        <span style={{ color: "var(--text-secondary)" }}>{value}</span>
+        <span style={{ color: "var(--text-secondary)", minWidth: 0, overflowWrap: "anywhere" }}>{value}</span>
       </div>
     );
   }
@@ -450,7 +453,7 @@ function AdCard({
       </div>
 
       {/* Ad name — the title */}
-      <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)", lineHeight: 1.35 }}>
+      <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)", lineHeight: 1.35, overflowWrap: "anywhere" }}>
         {ad.ad_name || "Untitled"}
       </div>
 
