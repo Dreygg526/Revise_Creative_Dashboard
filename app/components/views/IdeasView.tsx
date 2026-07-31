@@ -22,7 +22,7 @@ export default function IdeasView() {
   const { ideas, loading, error, addIdea, deleteIdea, markConverted } = useIdeas();
   const { createAd, updateAd } = useAds();
   const myRole = useMyRole();
-  const canManage = can(myRole, "create_ad"); // Founder + Strategist
+  const canManage = can(myRole, "create_ad"); // Founder + Strategist + Editor
   const [showNew, setShowNew] = useState(false);
   const [convertingId, setConvertingId] = useState<string | null>(null);
 
