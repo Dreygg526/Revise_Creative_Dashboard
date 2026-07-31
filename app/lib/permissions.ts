@@ -26,7 +26,7 @@ function normalize(role: string | null): string {
 // The rule table. Each action lists the roles allowed.
 const RULES: Record<Action, string[]> = {
   create_ad:        ["Founder", "Strategist", "Editor"], // Editors can add their own ads/ideas
-  edit_zone1:       ["Founder", "Strategist"],
+  edit_zone1:       ["Founder", "Strategist", "Editor"], // Editors fill strategy fields so they can clear the Idea → Brief gate
   edit_title:       ["Founder", "Strategist", "Editor"],
   edit_zone2:       ["Founder", "Strategist", "Editor", "Media Buyer"],
   move_stage:       ["Founder", "Strategist", "Editor", "Media Buyer"],
