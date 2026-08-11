@@ -55,6 +55,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const allowZone2 = can(myRole, "edit_zone2");
   const allowMove = can(myRole, "move_stage");
   const allowDelete = can(myRole, "delete_ad");
+  const allowPerf = can(myRole, "edit_performance");
   const showAdSetName = myRole === "Media Buyer" || myRole === "Founder";
 
   // Local editable copy of the ad. We save on blur / explicit save.
@@ -153,6 +154,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
       purchases: d.purchases,
       cvr: d.cvr,
       learning: d.learning,
+      meta_ad_id: d.meta_ad_id,
     });
   }
 
@@ -760,6 +762,58 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
           />
         </div>
 
+        {/* ---- META LINK + SYNCED PERFORMANCE ---- */}
+        <div style={sectionTitle}>Meta</div>
+        <div style={{ marginBottom: "20px", backgroundColor: "var(--nested)", border: "1px solid var(--border)", borderRadius: "10px", padding: "14px" }}>
+          {/* What the last sync found for this ad. Read-only. */}
+          {draft.meta_synced_at ? (
+            <div style={{ marginBottom: "14px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "10px", marginBottom: "8px" }}>
+                <MetaStat label="Spend" value={draft.meta_spend != null ? draft.meta_spend.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"} />
+                <MetaStat label="Purchases" value={draft.meta_purchases != null ? String(draft.meta_purchases) : "—"} />
+                <MetaStat label="CVR" value={draft.meta_cvr != null ? draft.meta_cvr.toFixed(2) + "%" : "—"} />
+                <MetaStat
+                  label="CPA"
+                  value={
+                    draft.meta_spend != null && draft.meta_purchases != null && draft.meta_purchases > 0
+                      ? (draft.meta_spend / draft.meta_purchases).toFixed(2)
+                      : "—"
+                  }
+                />
+              </div>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Matched{draft.meta_matched_count && draft.meta_matched_count > 1 ? ` ${draft.meta_matched_count} Meta ads` : ""}
+                {draft.meta_matched_name ? ` · ${draft.meta_matched_name}` : ""}
+                {draft.meta_match_method ? ` · via ${draft.meta_match_method.replace("_", " ")}` : ""}
+                {` · synced ${new Date(draft.meta_synced_at).toLocaleString()}`}
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "14px", lineHeight: 1.5 }}>
+              No Meta data yet. The sync matches on the DTC number inside the Meta ad name —
+              name this ad’s Meta creative something containing
+              <strong style={{ color: "var(--text-secondary)" }}>
+                {draft.dtc_number != null ? ` “DTC ${draft.dtc_number}”` : " its DTC number"}
+              </strong>
+              , or paste the Meta ad ID below to link it directly.
+            </div>
+          )}
+
+          {/* Manual override — the escape hatch when name matching can't figure it out. */}
+          <div style={{ opacity: allowPerf ? 1 : 0.55, pointerEvents: allowPerf ? "auto" : "none" }}>
+            <label style={labelStyle}>Meta ad ID (manual link)</label>
+            <input
+              style={inputStyle}
+              value={draft.meta_ad_id ?? ""}
+              onChange={(e) => set("meta_ad_id", e.target.value.trim() || null)}
+              placeholder="e.g. 23851234567890123 — overrides name matching"
+            />
+            <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "5px" }}>
+              Copy this from Ads Manager, or from the unmatched list after a sync on the Analytics page.
+            </div>
+          </div>
+        </div>
+
         {/* ---- END OF LIFE: PERFORMANCE + LEARNING ---- */}
         {/* ---- GENERATED COPY (from Copy Agent) ---- */}
         {(draft.selected_headline || draft.selected_ad_copy) && (
@@ -866,5 +920,17 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
         />
       )}
       </div>
+  );
+}
+
+// Read-only stat tile for the synced Meta numbers.
+function MetaStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: "10px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "2px" }}>
+        {label}
+      </div>
+      <div style={{ fontSize: "15px", color: "var(--text)", fontWeight: 600 }}>{value}</div>
+    </div>
   );
 }
