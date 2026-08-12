@@ -56,6 +56,11 @@ Internal creative-ops dashboard for a DTC ad agency ("Revise"). It tracks ads th
 
 **Types** (`app/types/index.ts`) mirror the Supabase schema one-to-one (source: `phase1_schema.sql`, not in repo). The central entity is `Ad`, organized into zones: Strategy (Zone 1), Operational (Zone 2), and end-of-life Performance/Learning. Important: **`cpa` is never stored** — compute it with `calcCpa()` (`spend / purchases`). A `Learning` is just a closed `Ad` with a `learning` written; the Learnings view filters, there is no separate table. Editable dropdown values (stages, personas, roles, etc.) live in the `settings_lists` table keyed by `SettingsListType`, managed in the Settings view.
 
+**Pipeline board filters** (`PipelineView.tsx`) — eight filters plus the free-text search, all local `useState`, `""` meaning "no filter". Three things worth preserving:
+- **Dropdown options merge `settings_lists` with live ad values.** `buildOptions()` takes the canonical list order, then appends any value present on an ad but absent from the list. Without the second half, renaming or deleting a value in Settings would leave every ad still carrying it permanently unreachable by filtering.
+- **Overdue is defined once, in three places.** `due_date < today && stage !== "Winner / Killed"` — the same expression `MyQueueView` and `WorkloadView` use. Change one, change all three or they'll disagree.
+- **Stage headers read `3 of 12` whenever anything is narrowing** (any filter *or* a search query), so a near-empty column reads as a filter effect rather than an empty pipeline. The closed-ads modal applies the same filters, so its list can't contradict the count on the column that opened it.
+
 **Meta Ads sync** — auto-fills performance instead of hand entry, without destroying hand entry:
 
 - **The DTC number lives on the Meta AD SET, not the ad name.** This account's real convention is `adset = "DTC #82 || Static Ad || The Standard Lab || Imitation || Editor: Matt"` while `ad = "VARIATION 3 II PDP BB"` — the ad set is the brief, the ads under it are creative variants. Measured coverage of total spend: ad name 21.5%, **ad set 77.7%**, campaign 0%. Matching only on ad names attributes about a fifth of spend; this is the single most important fact about this integration.
@@ -94,7 +99,7 @@ Snapshot as of **2026-08-11**. Update this when the situation changes; delete li
 - **Decimal DTCs** (`#11.1`, `#12.2`) currently collapse into their integer parent. Correct only if `.1` means "iteration of the same brief".
 - **Account ROAS reads 0.75x** on Meta's own attribution ($448k spend / $338k revenue, 30 days). Reconcile against real store revenue before treating that as truth — Meta under-attribution and margin-blindness both apply.
 
-**Not built yet:** the Pipeline board filter the founder asked for (filter by product / persona / editor / ad type). Unrelated to Meta; touches `PipelineView.tsx` only.
+**Pipeline board filter — built.** Product / Persona / Editor / Ad Type / Format (the founder's ask), plus Priority, Timing (Overdue / Due this week / No due date) and an Unassigned toggle. `PipelineView.tsx` only.
 
 **Unaddressed security note:** `app/api/invite` and `app/api/delete-member` don't verify the caller. Anyone who knows the URL can POST and trigger a real Supabase invite (including `role: "Founder"`) or a member deletion. `meta-sync` shows the pattern to copy — verify the session, then check `can(role, action)`.
 
