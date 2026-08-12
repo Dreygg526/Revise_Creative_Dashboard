@@ -108,7 +108,7 @@ Snapshot as of **2026-08-12**. Update this when the situation changes; delete li
 
 **Data-quality audit, 2026-08-12** (run against the live account after the first successful sync — 77 of 80 ads carry spend):
 - **`concept` is 100% untagged** — all $2.54M of spend sits under "— Unassigned". Its Top Creative Tags panel is therefore dead weight. `ad_type` is 6.9% untagged, `format` 2.9%; persona / core_emotion / problem / awareness are complete.
-- **Nobody closes ads out: 0 of 80 have a `result`, 0 have a `learning`.** So the Win rate column is dashes on every row and the Learnings view is empty by construction, not by bug.
+- **Nobody closes ads out: 0 of 80 have a `result`, 0 have a `learning`.** The Win rate column was removed from the Analytics table on 2026-08-12 because of this — it was dashes on every row. The Learnings view is empty for the same reason: by construction, not by bug. `settings_targets.target_hit_rate` still exists in the database but nothing reads it now.
 - **Small-sample hazard in the tag panels.** The two best-looking ROAS buckets are the two smallest — "Gallbladder removal woman 40+" reads 1.12x on **2 ads**, against 0.53x on the 52-ad / $1.9M bucket. They're ranked and styled identically. Guarding this is the highest-value cheap fix on that page.
 - **Triple Whale's `cogs` column is all zeros**, so margin can't come from there. Break-even ROAS needs a gross-margin figure entered in Settings; without it the 0.55x all-time / 0.90x 30-day ROAS can't be read as good or bad.
 

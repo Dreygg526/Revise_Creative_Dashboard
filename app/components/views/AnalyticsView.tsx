@@ -43,15 +43,12 @@ interface GroupRow {
   cvr: number | null;
   cvrBlended: boolean;
   cpa: number | null;
-  closed: number;
-  winners: number;
-  winRate: number | null;
   metaBacked: number;
 }
 
 export default function AnalyticsView() {
   const { ads, loading, error, fetchAds, updateAd, deleteAd } = useAds();
-  const { targetCpa, targetHitRate } = useTargets();
+  const { targetCpa } = useTargets();
   const myRole = useMyRole();
   const { sync, syncing, result, error: syncError, dismiss } = useMetaSync();
   const { lastRun, refetchLastRun } = useLastSyncRun();
@@ -153,7 +150,7 @@ export default function AnalyticsView() {
 
     const out: GroupRow[] = [];
     for (const [label, groupAds] of map.entries()) {
-      let spend = 0, purchases = 0, revenue = 0, closed = 0, winners = 0, metaBacked = 0;
+      let spend = 0, purchases = 0, revenue = 0, metaBacked = 0;
       // CVR is blended (total purchases / total clicks) wherever we have
       // click counts, so a 5-click ad can't swing the number as hard as a
       // 5,000-click one. Falls back to averaging stored CVR values only
@@ -174,11 +171,6 @@ export default function AnalyticsView() {
           cvrSum += perf.cvr;
           cvrCount++;
         }
-
-        if (ad.result) {
-          closed++;
-          if (ad.result === "Winner") winners++;
-        }
       }
 
       const blended = clicks > 0;
@@ -193,9 +185,6 @@ export default function AnalyticsView() {
         cvr: blended ? (purchasesForCvr / clicks) * 100 : cvrCount > 0 ? cvrSum / cvrCount : null,
         cvrBlended: blended,
         cpa: purchases > 0 ? spend / purchases : null,
-        closed,
-        winners,
-        winRate: closed > 0 ? (winners / closed) * 100 : null,
         metaBacked,
       });
     }
@@ -205,7 +194,7 @@ export default function AnalyticsView() {
   }, [visibleAds, groupBy]);
 
   const totals = useMemo(() => {
-    let spend = 0, purchases = 0, revenue = 0, closed = 0, winners = 0, count = 0, metaBacked = 0;
+    let spend = 0, purchases = 0, revenue = 0, count = 0, metaBacked = 0;
     let clicks = 0, purchasesForCvr = 0, cvrSum = 0, cvrCount = 0;
     for (const ad of visibleAds) {
       count++;
@@ -218,24 +207,18 @@ export default function AnalyticsView() {
         clicks += ad.meta_clicks;
         purchasesForCvr += ad.meta_purchases ?? 0;
       } else if (perf.cvr != null) { cvrSum += perf.cvr; cvrCount++; }
-      if (ad.result) { closed++; if (ad.result === "Winner") winners++; }
     }
     return {
       count, spend, purchases, revenue, metaBacked,
       roas: spend > 0 && revenue > 0 ? revenue / spend : null,
       cvr: clicks > 0 ? (purchasesForCvr / clicks) * 100 : cvrCount > 0 ? cvrSum / cvrCount : null,
       cpa: purchases > 0 ? spend / purchases : null,
-      winRate: closed > 0 ? (winners / closed) * 100 : null,
     };
   }, [visibleAds]);
 
   function cpaColor(cpa: number | null): string {
     if (cpa == null || targetCpa == null) return "var(--text-secondary)";
     return cpa <= targetCpa ? "#4ade80" : "#fca5a5";
-  }
-  function hitColor(rate: number | null): string {
-    if (rate == null || targetHitRate == null) return "var(--text-secondary)";
-    return rate >= targetHitRate ? "#4ade80" : "#fca5a5";
   }
   // Revenue vs ad spend only — this knows nothing about product margin,
   // so 1x is "made back the ad spend", not "profitable".
@@ -437,7 +420,6 @@ export default function AnalyticsView() {
                 <Th right>Purchases</Th>
                 <Th right>CPA</Th>
                 <Th right>CVR</Th>
-                <Th right>Win rate</Th>
                 <Th right>Live</Th>
               </tr>
             </thead>
@@ -463,7 +445,6 @@ export default function AnalyticsView() {
                     <Td right>{r.purchases > 0 ? fmt(r.purchases) : "—"}</Td>
                     <Td right color={cpaColor(r.cpa)}>{r.cpa != null ? fmt(r.cpa) : "—"}</Td>
                     <Td right>{r.cvr != null ? fmt(r.cvr) + "%" : "—"}</Td>
-                    <Td right color={hitColor(r.winRate)}>{r.winRate != null ? fmt(r.winRate) + "%" : "—"}</Td>
                     <Td right muted>{r.metaBacked > 0 ? `${r.metaBacked}/${r.count}` : "—"}</Td>
                   </tr>,
 
@@ -504,7 +485,6 @@ export default function AnalyticsView() {
                               <Td right>{perf.purchases != null ? fmt(perf.purchases) : "—"}</Td>
                               <Td right color={cpaColor(perf.cpa)}>{perf.cpa != null ? fmt(perf.cpa) : "—"}</Td>
                               <Td right>{perf.cvr != null ? fmt(perf.cvr) + "%" : "—"}</Td>
-                              <Td right muted>{ad.result ?? "—"}</Td>
                               <Td right muted>{perf.source === "meta" ? "Meta" : perf.source === "manual" ? "manual" : "—"}</Td>
                             </tr>
                           );
@@ -515,7 +495,7 @@ export default function AnalyticsView() {
 
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={10} style={{ padding: "24px", textAlign: "center", color: "var(--text-muted)" }}>
+                  <td colSpan={9} style={{ padding: "24px", textAlign: "center", color: "var(--text-muted)" }}>
                     No ads match this filter.
                   </td>
                 </tr>
@@ -533,7 +513,6 @@ export default function AnalyticsView() {
                   <Td right>{totals.purchases > 0 ? fmt(totals.purchases) : "—"}</Td>
                   <Td right color={cpaColor(totals.cpa)}>{totals.cpa != null ? fmt(totals.cpa) : "—"}</Td>
                   <Td right>{totals.cvr != null ? fmt(totals.cvr) + "%" : "—"}</Td>
-                  <Td right color={hitColor(totals.winRate)}>{totals.winRate != null ? fmt(totals.winRate) + "%" : "—"}</Td>
                   <Td right muted>{totals.metaBacked > 0 ? `${totals.metaBacked}/${totals.count}` : "—"}</Td>
                 </tr>
               </tfoot>
@@ -543,7 +522,7 @@ export default function AnalyticsView() {
       )}
 
       <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--text-muted)", lineHeight: 1.6 }}>
-        <div>Click a row to see the ads inside it. Targets — CPA ≤ {targetCpa ?? "—"} and win rate ≥ {targetHitRate ?? "—"}% show green.</div>
+        <div>Click a row to see the ads inside it. CPA at or under the {targetCpa ?? "—"} target shows green.</div>
         <div>
           ROAS is Meta-reported revenue ÷ ad spend — <strong>it knows nothing about your product margin</strong>, so 1x means you earned the ad spend back, not that you profited. Green ≥ 2x, amber ≥ 1x.
         </div>
