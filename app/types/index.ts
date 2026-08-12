@@ -60,6 +60,22 @@ export interface Ad {
   selected_headline: string | null;
   selected_ad_copy: string | null;
 
+  // ---- META ADS SYNC (auto-pulled; never overwrites the manual fields above) ----
+  // meta_ad_id is the manual escape hatch: paste a Meta ad ID to force the
+  // link when name matching can't resolve the ad on its own.
+  meta_ad_id: string | null;
+  meta_spend: number | null;
+  meta_purchases: number | null;
+  meta_revenue: number | null;
+  meta_cvr: number | null;
+  meta_impressions: number | null;
+  meta_clicks: number | null;
+  meta_matched_name: string | null;
+  meta_matched_count: number | null;
+  meta_ad_ids: string[] | null;
+  meta_match_method: MetaMatchMethod | null;
+  meta_synced_at: string | null;   // ISO timestamp
+
   // ---- Audit ----
   created_by: string | null;
   created_at: string;            // ISO timestamp
@@ -177,4 +193,67 @@ export function calcCpa(ad: Pick<Ad, 'spend' | 'purchases'>): number | null {
     return null;
   }
   return ad.spend / ad.purchases;
+}
+
+
+// ------------------------------------------------------------
+// META SYNC HELPERS
+// ------------------------------------------------------------
+
+// How a dashboard ad got linked to its Meta ad(s).
+//  'override'     — someone pasted a Meta ad ID onto the ad by hand
+//  'dtc_number'   — DTC number parsed out of the Meta AD name
+//  'dtc_adset'    — DTC number parsed out of the Meta AD SET name
+//  'dtc_campaign' — DTC number parsed out of the Meta CAMPAIGN name
+//  'ad_name'      — fell back to matching ad_name text
+//
+// In this account the ad set carries the DTC number ("DTC #82 || Static Ad
+// || ...") and the ad name is the creative variant ("VARIATION 3 II PDP"),
+// so 'dtc_adset' is the common case.
+export type MetaMatchMethod =
+  | 'override'
+  | 'dtc_number'
+  | 'dtc_adset'
+  | 'dtc_campaign'
+  | 'ad_name';
+
+// Where a displayed performance number came from.
+export type PerfSource = 'meta' | 'manual' | 'none';
+
+// Meta wins when it has data; manual close-out numbers are the fallback.
+// Nothing here mutates the ad — this is purely a read-time preference.
+export function effectivePerf(ad: Ad): {
+  spend: number | null;
+  purchases: number | null;
+  revenue: number | null;
+  cvr: number | null;
+  cpa: number | null;
+  roas: number | null;
+  aov: number | null;
+  source: PerfSource;
+} {
+  const hasMeta = ad.meta_spend != null || ad.meta_purchases != null;
+  const spend = hasMeta ? ad.meta_spend : ad.spend;
+  const purchases = hasMeta ? ad.meta_purchases : ad.purchases;
+  const cvr = hasMeta ? ad.meta_cvr : ad.cvr;
+  // Revenue only ever comes from Meta — there's no manual field for it.
+  const revenue = ad.meta_revenue;
+
+  const source: PerfSource = hasMeta
+    ? 'meta'
+    : ad.spend != null || ad.purchases != null
+      ? 'manual'
+      : 'none';
+
+  return {
+    spend,
+    purchases,
+    revenue,
+    cvr,
+    cpa: calcCpa({ spend, purchases }),
+    // ROAS and AOV are derived, never stored — same rule as CPA.
+    roas: revenue != null && spend != null && spend > 0 ? revenue / spend : null,
+    aov: revenue != null && purchases != null && purchases > 0 ? revenue / purchases : null,
+    source,
+  };
 }
