@@ -10,9 +10,58 @@ import NewAdModal from "@/app/components/modals/NewAdModal";
 import AdDetailModal from "@/app/components/modals/AdDetailModal";
 import type { Ad } from "@/app/types";
 
+// Timing is derived from due_date rather than stored, so its options are fixed
+// here instead of coming from settings_lists.
+const TIMING_OPTIONS = ["Overdue", "Due this week", "No due date"] as const;
+type Timing = (typeof TIMING_OPTIONS)[number] | "";
+
+// Canonical settings-list order first, then any value that appears on an ad but
+// is missing from the list (renamed or deleted since). Without the second half,
+// those ads could never be filtered to.
+function buildOptions(canonical: string[], ads: Ad[], pick: (a: Ad) => string | null): string[] {
+  const seen = new Set(canonical);
+  const extra: string[] = [];
+  for (const a of ads) {
+    const v = pick(a);
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      extra.push(v);
+    }
+  }
+  return [...canonical, ...extra.sort()];
+}
+
+function FilterSelect({
+  label, value, onChange, options,
+}: {
+  label: string; value: string; onChange: (v: string) => void; options: string[];
+}) {
+  const active = value !== "";
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label={label}
+      style={{
+        padding: "7px 10px", borderRadius: "6px",
+        border: active ? "1px solid var(--accent)" : "1px solid var(--border)",
+        backgroundColor: active ? "var(--raised)" : "var(--nested)",
+        color: active ? "var(--text)" : "var(--text-secondary)",
+        fontSize: "13px", fontWeight: active ? 500 : 400,
+        fontFamily: "inherit", cursor: "pointer", outline: "none",
+      }}
+    >
+      <option value="">{label}: All</option>
+      {options.map((o) => (
+        <option key={o} value={o}>{`${label}: ${o}`}</option>
+      ))}
+    </select>
+  );
+}
+
 export default function PipelineView() {
   const { ads, loading, error, createAd, updateAd, deleteAd, deleteMany, nextDtcNumber } = useAds();
-  const { valuesFor } = useSettings();
+  const { valuesFor, editorOptions } = useSettings();
   const myRole = useMyRole();
   const canCreate = can(myRole, "create_ad");
   const canBatchDelete = can(myRole, "batch_delete");
@@ -31,7 +80,75 @@ export default function PipelineView() {
   // Search query (matches name / product / editor / strategist)
   const [query, setQuery] = useState("");
 
+  // Board filters. "" always means "no filter on this field".
+  const [fProduct, setFProduct] = useState("");
+  const [fPersona, setFPersona] = useState("");
+  const [fEditor, setFEditor] = useState("");
+  const [fAdType, setFAdType] = useState("");
+  const [fFormat, setFFormat] = useState("");
+  const [fPriority, setFPriority] = useState("");
+  const [fTiming, setFTiming] = useState<Timing>("");
+  const [fUnassigned, setFUnassigned] = useState(false);
+
   const stages = valuesFor("stage");
+
+  // Options come from the settings lists (canonical order), with any value
+  // that exists on an ad but not in the list appended — otherwise an ad
+  // carrying a since-removed value would be unreachable by filtering.
+  const productOptions = buildOptions(valuesFor("product"), ads, (a) => a.product);
+  const personaOptions = buildOptions(valuesFor("persona"), ads, (a) => a.persona);
+  const adTypeOptions = buildOptions(valuesFor("ad_type"), ads, (a) => a.ad_type);
+  const formatOptions = buildOptions(valuesFor("format"), ads, (a) => a.format);
+  const priorityOptions = buildOptions(valuesFor("priority"), ads, (a) => a.priority);
+  const editorFilterOptions = buildOptions(
+    editorOptions.map((m) => m.name),
+    ads,
+    (a) => a.assigned_editor,
+  );
+
+  const today = new Date().toISOString().slice(0, 10);
+  // Same window MyQueue/Workload use, extended seven days for "due this week".
+  const weekOutDate = new Date();
+  weekOutDate.setDate(weekOutDate.getDate() + 7);
+  const weekOut = weekOutDate.toISOString().slice(0, 10);
+
+  const activeFilterCount =
+    [fProduct, fPersona, fEditor, fAdType, fFormat, fPriority, fTiming].filter(Boolean).length +
+    (fUnassigned ? 1 : 0);
+  const anyNarrowing = activeFilterCount > 0 || query.trim() !== "";
+
+  function clearFilters() {
+    setFProduct("");
+    setFPersona("");
+    setFEditor("");
+    setFAdType("");
+    setFFormat("");
+    setFPriority("");
+    setFTiming("");
+    setFUnassigned(false);
+  }
+
+  function matchesFilters(a: Ad): boolean {
+    if (fProduct && a.product !== fProduct) return false;
+    if (fPersona && a.persona !== fPersona) return false;
+    if (fEditor && a.assigned_editor !== fEditor) return false;
+    if (fAdType && a.ad_type !== fAdType) return false;
+    if (fFormat && a.format !== fFormat) return false;
+    if (fPriority && a.priority !== fPriority) return false;
+    if (fUnassigned && a.assigned_editor) return false;
+
+    if (fTiming === "Overdue") {
+      // Matches the rule in MyQueueView/WorkloadView — a closed ad is never overdue.
+      return !!a.due_date && a.due_date < today && a.stage !== "Winner / Killed";
+    }
+    if (fTiming === "Due this week") {
+      return !!a.due_date && a.due_date >= today && a.due_date <= weekOut;
+    }
+    if (fTiming === "No due date") {
+      return !a.due_date;
+    }
+    return true;
+  }
 
   function matchesQuery(a: Ad): boolean {
     const q = query.trim().toLowerCase();
@@ -50,7 +167,12 @@ export default function PipelineView() {
   }
 
   function adsInStage(stage: string): Ad[] {
-    return ads.filter((a) => a.stage === stage && matchesQuery(a));
+    return ads.filter((a) => a.stage === stage && matchesQuery(a) && matchesFilters(a));
+  }
+
+  // Unfiltered total for the stage, so the header can read "3 of 12".
+  function totalInStage(stage: string): number {
+    return ads.filter((a) => a.stage === stage).length;
   }
 
   const liveOpenAd = openAd ? ads.find((a) => a.id === openAd.id) ?? null : null;
@@ -161,7 +283,7 @@ export default function PipelineView() {
       </div>
 
       {/* Search */}
-      <div style={{ marginBottom: "20px", maxWidth: "420px" }}>
+      <div style={{ marginBottom: "10px", maxWidth: "420px" }}>
         <div style={{ position: "relative" }}>
           <Search
             size={15}
@@ -181,6 +303,51 @@ export default function PipelineView() {
         </div>
       </div>
 
+      {/* Filters */}
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px", marginBottom: "20px" }}>
+        <FilterSelect label="Product" value={fProduct} onChange={setFProduct} options={productOptions} />
+        <FilterSelect label="Persona" value={fPersona} onChange={setFPersona} options={personaOptions} />
+        <FilterSelect label="Editor" value={fEditor} onChange={setFEditor} options={editorFilterOptions} />
+        <FilterSelect label="Ad type" value={fAdType} onChange={setFAdType} options={adTypeOptions} />
+        <FilterSelect label="Format" value={fFormat} onChange={setFFormat} options={formatOptions} />
+        <FilterSelect label="Priority" value={fPriority} onChange={setFPriority} options={priorityOptions} />
+        <FilterSelect
+          label="Timing"
+          value={fTiming}
+          onChange={(v) => setFTiming(v as Timing)}
+          options={TIMING_OPTIONS as unknown as string[]}
+        />
+
+        {/* Unassigned is a toggle, not a value — it asks for the absence of an editor. */}
+        <button
+          onClick={() => setFUnassigned((v) => !v)}
+          style={{
+            padding: "7px 12px", borderRadius: "6px",
+            border: fUnassigned ? "none" : "1px solid var(--border)",
+            backgroundColor: fUnassigned ? "var(--accent)" : "transparent",
+            color: fUnassigned ? "#0d0d0f" : "var(--text-secondary)",
+            fontSize: "13px", fontWeight: fUnassigned ? 600 : 400,
+            cursor: "pointer", fontFamily: "inherit",
+          }}
+        >
+          Unassigned
+        </button>
+
+        {activeFilterCount > 0 && (
+          <button
+            onClick={clearFilters}
+            style={{
+              display: "flex", alignItems: "center", gap: "5px",
+              padding: "7px 10px", borderRadius: "6px", border: "none",
+              backgroundColor: "transparent", color: "var(--text-muted)",
+              fontSize: "13px", cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            <X size={13} /> Clear ({activeFilterCount})
+          </button>
+        )}
+      </div>
+
       {loading && <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>Loading board…</p>}
       {error && (
         <div style={{ backgroundColor: "#450a0a", color: "#fca5a5", padding: "12px 16px", borderRadius: "8px", border: "1px solid #7f1d1d", fontSize: "14px" }}>
@@ -192,6 +359,7 @@ export default function PipelineView() {
         <div style={{ display: "flex", gap: "10px", paddingBottom: "8px", width: "100%", overflowX: "auto" }}>
           {stages.map((stage) => {
             const stageAds = adsInStage(stage);
+            const stageTotal = totalInStage(stage);
             return (
               <div
                 key={stage}
@@ -209,7 +377,7 @@ export default function PipelineView() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2px 4px 6px 4px", flexShrink: 0 }}>
                   <span style={{ fontSize: "13px", fontWeight: 500, color: "var(--text)" }}>{stage}</span>
                   <span style={{ fontSize: "12px", color: "var(--text-muted)", backgroundColor: "var(--raised)", borderRadius: "10px", padding: "1px 8px", minWidth: "20px", textAlign: "center" }}>
-                    {stageAds.length}
+                    {anyNarrowing ? `${stageAds.length} of ${stageTotal}` : stageAds.length}
                   </span>
                 </div>
 
@@ -256,7 +424,9 @@ export default function PipelineView() {
       )}
 
       {showClosed && (() => {
-        const closed = ads.filter((a) => a.stage === "Winner / Killed");
+        // Board filters apply here too, so this list can't disagree with the
+        // count shown on the Winner / Killed column that opened it.
+        const closed = ads.filter((a) => a.stage === "Winner / Killed" && matchesQuery(a) && matchesFilters(a));
         const q = closedSearch.trim().toLowerCase();
         const filtered = closed
           .filter((a) => closedFilter === "all" ? true : a.result === closedFilter)
