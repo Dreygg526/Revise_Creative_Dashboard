@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { matchInsights, type MetaInsightRow } from "@/app/lib/metaMatch";
+import { activeProvider, fetchTripleWhaleRows, TripleWhaleError } from "@/app/lib/tripleWhale";
 import { can } from "@/app/lib/permissions";
 import type { Ad } from "@/app/types";
 
@@ -101,6 +102,107 @@ function describeMetaError(status: number, body: unknown): { message: string; st
   return { message: `Meta API error: ${raw}`, status: status >= 400 ? status : 502 };
 }
 
+// The Meta path, unchanged in behaviour — lifted out of POST so the two
+// providers sit side by side instead of one being nested inside the other.
+// Returns either the rows or a ready-to-send error; the caller decides.
+type MetaFetchResult =
+  | { rows: MetaInsightRow[]; pages: number; truncated: boolean }
+  | { error: string; status: number };
+
+async function fetchMetaRows(opts: {
+  token: string | undefined;
+  accountId: string;
+  datePreset: string;
+  admin: SupabaseClient;
+  email: string;
+}): Promise<MetaFetchResult> {
+  const { token, accountId, datePreset, admin, email } = opts;
+
+  if (!token) {
+    return {
+      error:
+        "Server is missing META_ACCESS_TOKEN. Add it in Vercel > Environment Variables " +
+        "(and .env.local for dev) — or set TRIPLE_WHALE_API_KEY to sync from Triple Whale instead.",
+      status: 500,
+    };
+  }
+
+  const fields = [
+    "ad_id",
+    "ad_name",
+    "adset_name",
+    "campaign_name",
+    "spend",
+    "impressions",
+    "clicks",
+    "actions",
+    "action_values",
+  ].join(",");
+
+  let url =
+    `https://graph.facebook.com/${API_VERSION}/${accountId}/insights` +
+    `?level=ad&fields=${fields}&date_preset=${encodeURIComponent(datePreset)}` +
+    `&limit=${PAGE_LIMIT}&access_token=${encodeURIComponent(token)}`;
+
+  const rows: MetaInsightRow[] = [];
+  let pages = 0;
+  let truncated = false;
+
+  while (url) {
+    if (pages >= MAX_PAGES) {
+      truncated = true;
+      break;
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    } catch (e) {
+      const aborted = e instanceof Error && e.name === "TimeoutError";
+      return {
+        error: aborted
+          ? "Meta took too long to respond. Try a shorter date range (e.g. last 30 days)."
+          : "Couldn't reach the Meta API. Check the server's network connection.",
+        status: 504,
+      };
+    }
+
+    const payload = await res.json().catch(() => null);
+
+    if (!res.ok || payload?.error) {
+      const { message, status } = describeMetaError(res.status, payload);
+      // Log the failed run so there's a trail, then report it.
+      await admin.from("meta_sync_runs").insert({
+        ran_by: email,
+        ad_account_id: accountId,
+        date_preset: datePreset,
+        error: message,
+      });
+      return { error: message, status };
+    }
+
+    for (const raw of (payload?.data ?? []) as MetaRawRow[]) {
+      if (!raw.ad_id) continue;
+      rows.push({
+        ad_id: raw.ad_id,
+        ad_name: raw.ad_name ?? "",
+        adset_name: raw.adset_name ?? null,
+        campaign_name: raw.campaign_name ?? null,
+        spend: num(raw.spend),
+        purchases: extractPurchaseMetric(raw.actions),
+        revenue: extractPurchaseMetric(raw.action_values),
+        impressions: num(raw.impressions),
+        clicks: num(raw.clicks),
+      });
+    }
+
+    pages++;
+    url = payload?.paging?.next ?? "";
+  }
+
+  return { rows, pages, truncated };
+}
+
 export async function POST(req: Request) {
   try {
     const token = process.env.META_ACCESS_TOKEN;
@@ -153,87 +255,38 @@ export async function POST(req: Request) {
     }
 
     // Caller is authorized — now it's safe to report on server config.
-    if (!token) {
-      return NextResponse.json(
-        { error: "Server is missing META_ACCESS_TOKEN. Add it in Vercel > Environment Variables (and .env.local for dev)." },
-        { status: 500 }
-      );
-    }
-
-    // ---- Pull every insights page from Meta ----
-    const fields = [
-      "ad_id",
-      "ad_name",
-      "adset_name",
-      "campaign_name",
-      "spend",
-      "impressions",
-      "clicks",
-      "actions",
-      "action_values",
-    ].join(",");
-
-    let url =
-      `https://graph.facebook.com/${API_VERSION}/${accountId}/insights` +
-      `?level=ad&fields=${fields}&date_preset=${encodeURIComponent(datePreset)}` +
-      `&limit=${PAGE_LIMIT}&access_token=${encodeURIComponent(token)}`;
-
+    // Which provider runs is decided by whether a Triple Whale key exists.
+    const provider = activeProvider();
     const rows: MetaInsightRow[] = [];
     let pages = 0;
     let truncated = false;
+    // What gets logged as the source of this run: a Meta ad account or a shop.
+    let sourceId = accountId;
 
-    while (url) {
-      if (pages >= MAX_PAGES) {
-        truncated = true;
-        break;
-      }
-
-      let res: Response;
+    if (provider === "triple_whale") {
+      sourceId = process.env.TRIPLE_WHALE_SHOP_ID || "rcv9b7-p1.myshopify.com";
       try {
-        res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        rows.push(...(await fetchTripleWhaleRows(datePreset)));
       } catch (e) {
-        const aborted = e instanceof Error && e.name === "TimeoutError";
-        return NextResponse.json(
-          {
-            error: aborted
-              ? "Meta took too long to respond. Try a shorter date range (e.g. last 30 days)."
-              : "Couldn't reach the Meta API. Check the server's network connection.",
-          },
-          { status: 504 }
-        );
+        if (e instanceof TripleWhaleError) {
+          await admin.from("meta_sync_runs").insert({
+            ran_by: email,
+            ad_account_id: sourceId,
+            date_preset: datePreset,
+            error: e.message,
+          });
+          return NextResponse.json({ error: e.message }, { status: e.status });
+        }
+        throw e;
       }
-
-      const payload = await res.json().catch(() => null);
-
-      if (!res.ok || payload?.error) {
-        const { message, status } = describeMetaError(res.status, payload);
-        // Log the failed run so there's a trail, then report it.
-        await admin.from("meta_sync_runs").insert({
-          ran_by: email,
-          ad_account_id: accountId,
-          date_preset: datePreset,
-          error: message,
-        });
-        return NextResponse.json({ error: message }, { status });
+    } else {
+      const metaResult = await fetchMetaRows({ token, accountId, datePreset, admin, email });
+      if ("error" in metaResult) {
+        return NextResponse.json({ error: metaResult.error }, { status: metaResult.status });
       }
-
-      for (const raw of (payload?.data ?? []) as MetaRawRow[]) {
-        if (!raw.ad_id) continue;
-        rows.push({
-          ad_id: raw.ad_id,
-          ad_name: raw.ad_name ?? "",
-          adset_name: raw.adset_name ?? null,
-          campaign_name: raw.campaign_name ?? null,
-          spend: num(raw.spend),
-          purchases: extractPurchaseMetric(raw.actions),
-          revenue: extractPurchaseMetric(raw.action_values),
-          impressions: num(raw.impressions),
-          clicks: num(raw.clicks),
-        });
-      }
-
-      pages++;
-      url = payload?.paging?.next ?? "";
+      rows.push(...metaResult.rows);
+      pages = metaResult.pages;
+      truncated = metaResult.truncated;
     }
 
     // ---- Match against the dashboard ----
@@ -281,7 +334,7 @@ export async function POST(req: Request) {
       // instead of losing it with the React state.
       await admin.from("meta_sync_runs").insert({
         ran_by: email,
-        ad_account_id: accountId,
+        ad_account_id: sourceId,
         date_preset: datePreset,
         rows_fetched: rows.length,
         ads_matched: matches.length,
@@ -296,7 +349,8 @@ export async function POST(req: Request) {
       ok: true,
       dryRun,
       syncedAt,
-      accountId,
+      provider,
+      accountId: sourceId,
       datePreset,
       rowsFetched: rows.length,
       adsMatched: matches.length,

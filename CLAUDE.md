@@ -34,7 +34,9 @@ The app needs these env vars (Vercel: Project Settings > Environment Variables; 
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — browser-side Supabase client (`lib/supabaseClient.ts`).
 - `SUPABASE_SERVICE_ROLE_KEY` — server-only, used by `app/api/invite` and `app/api/delete-member` to call Supabase admin auth. Never expose to the client.
 - `ANTHROPIC_API_KEY` — server-only, used by `app/api/generate-copy` (the Copy Agent).
-- `META_ACCESS_TOKEN` — server-only, used by `app/api/meta-sync`. Long-lived (60-day) or System User token with `ads_read`. Never expose to the client.
+- `TRIPLE_WHALE_API_KEY` — server-only. **Its presence is what selects the provider** (`activeProvider()` in `app/lib/tripleWhale.ts`): set it and syncs pull from Triple Whale, unset it and they fall back to Meta direct. Needs the `Pixel Attribution: Read` scope (plus `Summary Page: Read`); no write scope. Never expose to the client.
+- `TRIPLE_WHALE_SHOP_ID` — optional, defaults to `rcv9b7-p1.myshopify.com`. Must be the `myshopify.com` domain, not the customer-facing one.
+- `META_ACCESS_TOKEN` — server-only, used by `app/api/meta-sync` when no Triple Whale key is set. Long-lived (60-day) or System User token with `ads_read`. Never expose to the client.
 - `META_AD_ACCOUNT_ID` — optional, defaults to `act_2223260745102430`.
 - `META_API_VERSION` — optional, defaults to `v25.0`. Bump when Meta sunsets that version.
 
@@ -61,6 +63,14 @@ Internal creative-ops dashboard for a DTC ad agency ("Revise"). It tracks ads th
 - **Overdue is defined once, in three places.** `due_date < today && stage !== "Winner / Killed"` — the same expression `MyQueueView` and `WorkloadView` use. Change one, change all three or they'll disagree.
 - **Stage headers read `3 of 12` whenever anything is narrowing** (any filter *or* a search query), so a near-empty column reads as a filter effect rather than an empty pipeline. The closed-ads modal applies the same filters, so its list can't contradict the count on the column that opened it.
 
+**Two providers, one matcher.** `app/api/meta-sync/route.ts` fetches from either Meta direct (`fetchMetaRows()`, in the route) or Triple Whale (`app/lib/tripleWhale.ts`), both producing the same `MetaInsightRow[]`. Everything downstream — matcher, Analytics UI, `meta_*` columns, `effectivePerf()` — is provider-agnostic and was not touched to add Triple Whale. Things to know before editing `tripleWhale.ts`:
+- **The SQL endpoint returns a bare JSON array**, not the `{ success, message, data }` envelope its own docs specify. Reading `.data` gives zero rows against a healthy `200` — a silent failure that looks like "no data found".
+- The column is **`orders_quantity`**; the example query in Triple Whale's docs says `order_quantity`, which does not exist. `pixel_joined_tvf` takes no arguments despite the name, holds 185 columns, expands to ~98KB of inlined SQL (hence nonsense column positions in syntax errors), and runs on ClickHouse.
+- Date params must be **camelCase** `@startDate` / `@endDate` over the API. The `@start_date` form works only in their in-app SQL Builder and fails here.
+- `channel = 'facebook-ads'` is the Meta filter. Verified 2026-08-12: Meta $1.35M of 90-day spend vs $41.9k google-ads.
+- The window ends **yesterday**, not today — the current day is still filling and would read as a drop on every sync.
+- `pixel_joined_tvf` also carries **`ad_image_url`**, `creative_format`, `creative_cta_type` and asset counts. Not used yet; this is what the Atria-style Analytics rebuild needs.
+
 **Meta Ads sync** — auto-fills performance instead of hand entry, without destroying hand entry:
 
 - **The DTC number lives on the Meta AD SET, not the ad name.** This account's real convention is `adset = "DTC #82 || Static Ad || The Standard Lab || Imitation || Editor: Matt"` while `ad = "VARIATION 3 II PDP BB"` — the ad set is the brief, the ads under it are creative variants. Measured coverage of total spend: ad name 21.5%, **ad set 77.7%**, campaign 0%. Matching only on ad names attributes about a fifth of spend; this is the single most important fact about this integration.
@@ -81,21 +91,22 @@ Internal creative-ops dashboard for a DTC ad agency ("Revise"). It tracks ads th
 
 ## Project status
 
-Snapshot as of **2026-08-11**. Update this when the situation changes; delete lines once they stop being true.
+Snapshot as of **2026-08-12**. Update this when the situation changes; delete lines once they stop being true.
 
 **Meta Ads integration — built and verified against the live account.** Sync route, matcher, Analytics UI, manual override, persistence, revenue/ROAS. Verified end-to-end: stored totals reconcile with an independent recompute from Meta to within 0.014% on spend.
 
-**Required before a sync will write:** run the three SQL files in order (`meta_integration_schema.sql` → `_v2.sql` → `_v3.sql`) in the Supabase SQL editor. Each adds columns the route writes to; skipping one makes every row update fail.
-
-**Match rate on real data (90-day window, at time of writing):** 31 of 75 dashboard ads, ~52% of spend. The ceiling isn't the code — it's the two data gaps below.
+**Schema is applied.** All three SQL files (`meta_integration_schema.sql` → `_v2.sql` → `_v3.sql`) have been run against the live Supabase project — verified 2026-08-12. Re-run them only when standing up a fresh database.
 
 **Known data gaps — these are data problems, not bugs. Don't try to fix them in code:**
-- Meta ad sets reference DTC #78, #82, #89, #102, #116, #118, #128 with real spend behind them (~$196k over 90 days), but `ads` stops at #75. Those briefs were never logged, or the two numbering schemes have drifted apart.
-- Roughly 7% of spend sits under a `BATCH#27`-style naming scheme with no DTC number anywhere. Needs renaming in Ads Manager or a per-ad `meta_ad_id` override.
-- `dtc_number` is **not unique** — #31 is duplicated ("Which NAC Wrecks Your Gut" / "AI Animated Hangover"), so one of the two can never receive Meta data. #14 is missing, which is harmless.
+- Ad sets reference DTC numbers `ads` doesn't hold. On the 90-day window the largest are #82 (~$96k), #102 (~$42k), #14 (~$22k) and #128 (~$18k), roughly $375k unmatched in total. **Creating the missing brief in the dashboard fixes each one automatically** — the next sync attaches its spend, no override needed. #14 is a hole inside an otherwise continuous 1–80 range, so that brief was probably deleted rather than never created.
+- Some spend sits under a `BATCH#27`-style naming scheme with no DTC number anywhere. Needs renaming in Ads Manager or a per-ad `meta_ad_id` override.
+- `dtc_number` is **not unique** — #31 is duplicated ("Which NAC Wrecks Your Gut" / "AI Animated Hangover"), so one of the two can never receive data.
+
+**Triple Whale — built, and now the default provider.** Verified live 2026-08-12 with the unmodified matcher: **76 of 80 ads and 81.6% of spend** on all-time, against 31 of 75 and ~52% on Meta direct. The migrations are all applied; the DB is ready.
+
+**Attribution differs sharply between the two, which is the point.** Spend agrees (Triple Whale reports channel-reported spend). Revenue does not: over 90 days Triple Whale's pixel attributes $1,531,382 against $1,346,288 spend (**1.14x**) where Meta's own attribution reads **0.75x** on the same period — roughly 52% more revenue found. Ads killed on the Meta figure were judged on a number about a third too low. ROAS is still margin-blind either way.
 
 **Open decisions:**
-- **Triple Whale vs Meta direct** — still undecided. The fetch layer (`route.ts`) and the matching layer (`metaMatch.ts`) are deliberately separate: swapping providers means producing the same `MetaInsightRow[]` from a different source, leaving the matcher and the whole UI untouched.
 - **Decimal DTCs** (`#11.1`, `#12.2`) currently collapse into their integer parent. Correct only if `.1` means "iteration of the same brief".
 - **Account ROAS reads 0.75x** on Meta's own attribution ($448k spend / $338k revenue, 30 days). Reconcile against real store revenue before treating that as truth — Meta under-attribution and margin-blindness both apply.
 
