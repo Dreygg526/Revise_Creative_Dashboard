@@ -73,6 +73,9 @@ export interface Ad {
   meta_matched_name: string | null;
   meta_matched_count: number | null;
   meta_ad_ids: string[] | null;
+  // Creative thumbnail (schema v4). Triple Whale's CDN copy, so it doesn't
+  // expire with an access token. Null until v4 is run and a sync has run.
+  meta_ad_image_url: string | null;
   meta_match_method: MetaMatchMethod | null;
   meta_synced_at: string | null;   // ISO timestamp
 

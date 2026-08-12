@@ -9,6 +9,7 @@ import { useMetaSync, useLastSyncRun, DATE_PRESETS, type UnmatchedMetaAd } from 
 import { can } from "@/app/lib/permissions";
 import { effectivePerf, type Ad } from "@/app/types";
 import AdDetailModal from "@/app/components/modals/AdDetailModal";
+import AnalyticsOverview from "@/app/components/analytics/AnalyticsOverview";
 
 // The dimensions you can group by. `key` is the Ad field, `label` is shown.
 const GROUP_OPTIONS = [
@@ -254,7 +255,7 @@ export default function AnalyticsView() {
         <div>
           <h1 style={{ fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>Analytics</h1>
           <p style={{ color: "var(--text-secondary)", marginTop: "4px", fontSize: "14px" }}>
-            Performance sliced by strategy. Pulled from Meta by DTC number on the ad or ad set name.
+            Performance sliced by strategy. Pulled from Triple Whale by DTC number on the ad or ad set name.
           </p>
         </div>
 
@@ -275,7 +276,7 @@ export default function AnalyticsView() {
           <button
             onClick={runSync}
             disabled={syncing || !allowSync}
-            title={allowSync ? "Pull live spend and purchases from Meta" : "Only Founder, Strategist, and Media Buyer can sync performance data."}
+            title={allowSync ? "Pull live spend, purchases and revenue" : "Only Founder, Strategist, and Media Buyer can sync performance data."}
             style={{
               display: "flex", alignItems: "center", gap: "7px",
               padding: "7px 14px", borderRadius: "6px", border: "none",
@@ -287,7 +288,7 @@ export default function AnalyticsView() {
             }}
           >
             <RefreshCw size={14} style={{ animation: syncing ? "spin 1s linear infinite" : undefined }} />
-            {syncing ? "Syncing…" : "Sync from Meta"}
+            {syncing ? "Syncing…" : "Sync performance"}
           </button>
         </div>
       </div>
@@ -392,26 +393,28 @@ export default function AnalyticsView() {
         </div>
       )}
 
-      {/* Controls */}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px", flexWrap: "wrap" }}>
-        <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>Group by</span>
-        {GROUP_OPTIONS.map((opt) => (
-          <Pill key={opt.key} active={groupBy === opt.key} onClick={() => setGroupBy(opt.key)}>{opt.label}</Pill>
-        ))}
-      </div>
+      {/* All controls sit together at the top, above everything they drive. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "20px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "13px", color: "var(--text-muted)", minWidth: "58px" }}>Show</span>
+          {MATCH_FILTERS.map((f) => {
+            const n = f.key === "all" ? ads.length
+              : f.key === "matched" ? ads.filter((a) => a.meta_synced_at != null).length
+              : ads.filter((a) => a.meta_synced_at == null).length;
+            return (
+              <Pill key={f.key} active={matchFilter === f.key} onClick={() => setMatchFilter(f.key)}>
+                {f.label} <span style={{ opacity: 0.65 }}>({n})</span>
+              </Pill>
+            );
+          })}
+        </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "20px", flexWrap: "wrap" }}>
-        <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>Show</span>
-        {MATCH_FILTERS.map((f) => {
-          const n = f.key === "all" ? ads.length
-            : f.key === "matched" ? ads.filter((a) => a.meta_synced_at != null).length
-            : ads.filter((a) => a.meta_synced_at == null).length;
-          return (
-            <Pill key={f.key} active={matchFilter === f.key} onClick={() => setMatchFilter(f.key)}>
-              {f.label} <span style={{ opacity: 0.65 }}>({n})</span>
-            </Pill>
-          );
-        })}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "13px", color: "var(--text-muted)", minWidth: "58px" }}>Group by</span>
+          {GROUP_OPTIONS.map((opt) => (
+            <Pill key={opt.key} active={groupBy === opt.key} onClick={() => setGroupBy(opt.key)}>{opt.label}</Pill>
+          ))}
+        </div>
       </div>
 
       {loading && <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>Loading…</p>}
@@ -550,6 +553,18 @@ export default function AnalyticsView() {
           {lastSynced && ` Last synced ${new Date(lastSynced).toLocaleString()}.`}
         </div>
       </div>
+
+      {/* Overview sits under the table: the table is the thing people came to
+          read, the charts are the summary they scroll to afterwards. */}
+      {!loading && !error && (
+        <div style={{ marginTop: "24px" }}>
+          <AnalyticsOverview
+            ads={visibleAds}
+            targetCpa={targetCpa}
+            onOpenAd={setOpenAd}
+          />
+        </div>
+      )}
 
       {openAd && (
         <AdDetailModal

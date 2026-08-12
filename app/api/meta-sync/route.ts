@@ -263,10 +263,15 @@ export async function POST(req: Request) {
     // What gets logged as the source of this run: a Meta ad account or a shop.
     let sourceId = accountId;
 
+    // Meta ad id -> creative thumbnail. Only Triple Whale supplies these.
+    let images: Record<string, string> = {};
+
     if (provider === "triple_whale") {
       sourceId = process.env.TRIPLE_WHALE_SHOP_ID || "rcv9b7-p1.myshopify.com";
       try {
-        rows.push(...(await fetchTripleWhaleRows(datePreset)));
+        const result = await fetchTripleWhaleRows(datePreset);
+        rows.push(...result.rows);
+        images = result.images;
       } catch (e) {
         if (e instanceof TripleWhaleError) {
           await admin.from("meta_sync_runs").insert({
@@ -306,11 +311,25 @@ export async function POST(req: Request) {
     let updated = 0;
     const writeErrors: string[] = [];
 
+    // meta_ad_image_url arrives in schema v4. Probe for it once rather than
+    // assuming: writing a column that doesn't exist fails every row update,
+    // and a missing thumbnail is not worth breaking a sync over.
+    let canWriteImage = false;
+    if (Object.keys(images).length > 0) {
+      const { error: probeErr } = await admin.from("ads").select("meta_ad_image_url").limit(1);
+      canWriteImage = !probeErr;
+    }
+
     if (!dryRun) {
       for (const m of matches) {
+        // Several Meta ads can roll into one brief; take the first thumbnail
+        // we have, which is the highest-spend variant since matchInsights
+        // orders them that way.
+        const image = m.metaAdIds.map((id) => images[id]).find(Boolean) ?? null;
         const { error: upErr } = await admin
           .from("ads")
           .update({
+            ...(canWriteImage ? { meta_ad_image_url: image } : {}),
             meta_spend: m.spend,
             meta_purchases: m.purchases,
             meta_revenue: m.revenue,

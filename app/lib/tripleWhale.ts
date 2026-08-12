@@ -41,6 +41,7 @@ interface TripleWhaleRow {
   ad_name?: string | null;
   adset_name?: string | null;
   campaign_name?: string | null;
+  ad_image_url?: string | null;
   spend?: number | string | null;
   purchases?: number | string | null;
   revenue?: number | string | null;
@@ -75,6 +76,7 @@ const QUERY = `
     ad_name,
     adset_name,
     campaign_name,
+    any(ad_image_url)    AS ad_image_url,
     SUM(spend)           AS spend,
     SUM(orders_quantity) AS purchases,
     SUM(order_revenue)   AS revenue,
@@ -85,6 +87,67 @@ const QUERY = `
     AND channel = '${META_CHANNEL}'
   GROUP BY ad_id, ad_name, adset_name, campaign_name
 `;
+
+// Account-level daily totals — what the KPI sparklines and the
+// previous-period deltas are drawn from. Deliberately not per-ad: a daily
+// series for every ad would be days × ads rows, and the tiles report on the
+// account, not on one brief.
+const DAILY_QUERY = `
+  SELECT
+    event_date,
+    SUM(spend)           AS spend,
+    SUM(orders_quantity) AS purchases,
+    SUM(order_revenue)   AS revenue,
+    SUM(impressions)     AS impressions,
+    SUM(clicks)          AS clicks
+  FROM pixel_joined_tvf
+  WHERE event_date BETWEEN @startDate AND @endDate
+    AND channel = '${META_CHANNEL}'
+  GROUP BY event_date
+  ORDER BY event_date
+`;
+
+export interface DailyPoint {
+  date: string;
+  spend: number;
+  purchases: number;
+  revenue: number;
+  impressions: number;
+  clicks: number;
+}
+
+// The selected window and the equal-length window immediately before it, so
+// every tile can show a delta without a second round trip from the browser.
+export async function fetchTripleWhaleDaily(datePreset: string): Promise<{
+  current: DailyPoint[];
+  previous: DailyPoint[];
+}> {
+  const days = PRESET_DAYS[datePreset] ?? PRESET_DAYS.maximum;
+  const curr = rangeFor(datePreset);
+  const prevEnd = new Date(new Date(curr.startDate).getTime() - 86_400_000);
+  const prevStart = new Date(prevEnd.getTime() - days * 86_400_000);
+  const prev = {
+    startDate: prevStart.toISOString().slice(0, 10),
+    endDate: prevEnd.toISOString().slice(0, 10),
+  };
+
+  const shape = (rows: Record<string, unknown>[]): DailyPoint[] =>
+    rows.map((r) => ({
+      date: String(r.event_date ?? ""),
+      spend: num(r.spend),
+      purchases: num(r.purchases),
+      revenue: num(r.revenue),
+      impressions: num(r.impressions),
+      clicks: num(r.clicks),
+    }));
+
+  const [current, previous] = await Promise.all([
+    runSql<Record<string, unknown>>(DAILY_QUERY, curr),
+    runSql<Record<string, unknown>>(DAILY_QUERY, prev),
+  ]);
+
+  return { current: shape(current), previous: shape(previous) };
+}
 
 function describeError(status: number, message: string): TripleWhaleError {
   if (status === 401) {
@@ -123,7 +186,8 @@ function describeError(status: number, message: string): TripleWhaleError {
   return new TripleWhaleError(`Triple Whale API error: ${message.slice(0, 300)}`, status >= 400 ? status : 502);
 }
 
-export async function fetchTripleWhaleRows(datePreset: string): Promise<MetaInsightRow[]> {
+// One request, one place to translate failures. Returns the decoded rows.
+async function runSql<T>(query: string, period: { startDate: string; endDate: string }): Promise<T[]> {
   const apiKey = process.env.TRIPLE_WHALE_API_KEY;
   if (!apiKey) {
     throw new TripleWhaleError(
@@ -138,7 +202,7 @@ export async function fetchTripleWhaleRows(datePreset: string): Promise<MetaInsi
     res = await fetch(SQL_URL, {
       method: "POST",
       headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ shopId, query: QUERY, period: rangeFor(datePreset) }),
+      body: JSON.stringify({ shopId, query, period }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (e) {
@@ -169,14 +233,26 @@ export async function fetchTripleWhaleRows(datePreset: string): Promise<MetaInsi
   // would yield zero rows against a perfectly healthy 200, so the array form
   // is what we trust, with the envelope kept only as a fallback in case they
   // ever ship the documented shape.
-  const raw: TripleWhaleRow[] = Array.isArray(payload)
-    ? (payload as TripleWhaleRow[])
-    : ((payload as { data?: TripleWhaleRow[] })?.data ?? []);
+  return Array.isArray(payload) ? (payload as T[]) : ((payload as { data?: T[] })?.data ?? []);
+}
+
+// Creative thumbnails ride alongside the rows rather than inside
+// MetaInsightRow, so the matcher stays exactly as it is — it has no business
+// knowing about images. The route joins them back on Meta ad id afterwards.
+export interface ProviderRows {
+  rows: MetaInsightRow[];
+  images: Record<string, string>;
+}
+
+export async function fetchTripleWhaleRows(datePreset: string): Promise<ProviderRows> {
+  const raw = await runSql<TripleWhaleRow>(QUERY, rangeFor(datePreset));
 
   const rows: MetaInsightRow[] = [];
+  const images: Record<string, string> = {};
   for (const r of raw) {
     const adId = r.ad_id == null ? "" : String(r.ad_id);
     if (!adId) continue;
+    if (r.ad_image_url) images[adId] = String(r.ad_image_url);
     rows.push({
       ad_id: adId,
       ad_name: r.ad_name ?? "",
@@ -189,7 +265,7 @@ export async function fetchTripleWhaleRows(datePreset: string): Promise<MetaInsi
       clicks: num(r.clicks),
     });
   }
-  return rows;
+  return { rows, images };
 }
 
 // Which provider a sync should use. Triple Whale wins when configured: it
