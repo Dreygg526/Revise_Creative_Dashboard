@@ -4,29 +4,18 @@ import { useMemo, useState } from "react";
 import { useAds } from "@/app/hooks/useAds";
 import { useSettings } from "@/app/hooks/useSettings";
 import { useMyRole } from "@/app/hooks/useMyRole";
-import { useAuth } from "@/app/hooks/useAuth";
-import { supabase } from "@/lib/supabaseClient";
+import { useMyName } from "@/app/hooks/useMyName";
 import AdDetailModal from "@/app/components/modals/AdDetailModal";
 import type { Ad } from "@/app/types";
-import { useEffect } from "react";
 
 export default function MyQueueView() {
   const { ads, loading, error, updateAd, deleteAd } = useAds();
   const { valuesFor } = useSettings();
   const myRole = useMyRole();
-  const { session } = useAuth();
+  const myName = useMyName();
   const [openAd, setOpenAd] = useState<Ad | null>(null);
-  const [myName, setMyName] = useState<string | null>(null);
 
   const stages = valuesFor("stage");
-
-  // Look up the logged-in user's NAME (ads store names, not emails).
-  useEffect(() => {
-    const email = session?.user?.email;
-    if (!email) { setMyName(null); return; }
-    supabase.from("team_members").select("name").eq("email", email).maybeSingle()
-      .then(({ data }) => setMyName(data?.name ?? null));
-  }, [session]);
 
   const isFounder = myRole === "Founder";
 

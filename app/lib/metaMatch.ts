@@ -18,7 +18,7 @@
 // and to try in isolation when a name won't match.
 // ============================================================
 
-import type { Ad, MetaMatchMethod } from "@/app/types";
+import type { Ad, MetaMatchMethod, MetaBreakdownRow } from "@/app/types";
 
 // One row from the Meta insights endpoint, already normalized to numbers.
 export interface MetaInsightRow {
@@ -26,6 +26,10 @@ export interface MetaInsightRow {
   ad_name: string;
   adset_name: string | null;
   campaign_name: string | null;
+  // Which Meta ad account the ad lives in ("act_…"). This shop runs six of
+  // them, so it can't be assumed from config — an Ads Manager link built
+  // against the wrong account shows "No ads found" for an ad that exists.
+  account_id: string | null;
   spend: number;
   purchases: number;
   revenue: number;              // purchase conversion value
@@ -46,6 +50,10 @@ export interface MetaMatch {
   matchedName: string;          // Meta ad name(s) that fed this row
   matchedCount: number;         // how many Meta ads rolled up
   metaAdIds: string[];
+  // The individual Meta ads behind the sums above, highest spend first.
+  // A blended CPA over 70 creatives says nothing about any one of them;
+  // this is what makes the roll-up auditable.
+  rows: MetaBreakdownRow[];
 }
 
 export interface MatchResult {
@@ -100,6 +108,31 @@ export function extractDtcNumber(name: string | null | undefined): number | null
   }
 
   return null;
+}
+
+// The same explicit prefix, but keeping any decimal suffix: "DTC #21.1" -> "21.1".
+const DTC_PREFIXED_VARIANT = /dtc[\s\-#_:.]*(\d{1,6}(?:\.\d{1,3})?)/i;
+
+/**
+ * Pull the FULL DTC token out of a name, decimal included — "21", "21.1".
+ *
+ * extractDtcNumber() deliberately collapses decimals into their integer
+ * parent, because #21.1 is understood to be an iteration of brief #21 rather
+ * than a brief of its own. That's an assumption, not a fact, and until now it
+ * was invisible: once the rows were summed there was no way to see how much of
+ * #21's spend was actually #21.1. This keeps the un-collapsed token so the UI
+ * can show the split. It has no effect on matching.
+ *
+ * Returns null when the name carries no explicit "DTC" marker — a bare leading
+ * number is too weak a signal to read a decimal off.
+ */
+export function extractDtcVariant(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const m = name.trim().match(DTC_PREFIXED_VARIANT);
+  if (!m) return null;
+  // Trailing ".0" and "21." are noise from the separator class, not iterations.
+  const token = m[1].replace(/\.0*$/, "");
+  return Number(token) > 0 ? token : null;
 }
 
 // Strip everything but letters and digits so "Sleep Angle v2" and
@@ -159,6 +192,23 @@ export function matchInsights(rows: MetaInsightRow[], ads: Ad[]): MatchResult {
   const acc = new Map<string, MetaMatch>();
   const unmatched: MatchResult["unmatched"] = [];
 
+  function breakdownRow(row: MetaInsightRow): MetaBreakdownRow {
+    return {
+      ad_id: row.ad_id,
+      ad_name: row.ad_name,
+      adset_name: row.adset_name,
+      account_id: row.account_id,
+      // The ad name is the more specific label; fall back to the ad set,
+      // which is where this account usually puts the DTC number.
+      variant: extractDtcVariant(row.ad_name) ?? extractDtcVariant(row.adset_name),
+      spend: row.spend,
+      purchases: row.purchases,
+      revenue: row.revenue,
+      impressions: row.impressions,
+      clicks: row.clicks,
+    };
+  }
+
   function add(ad: Ad, row: MetaInsightRow, method: MetaMatchMethod) {
     const existing = acc.get(ad.id);
     if (existing) {
@@ -171,6 +221,7 @@ export function matchInsights(rows: MetaInsightRow[], ads: Ad[]): MatchResult {
       existing.metaAdIds.push(row.ad_id);
       existing.matchedName = `${existing.matchedName}, ${row.ad_name}`;
       existing.cvr = calcCvr(existing.purchases, existing.clicks);
+      existing.rows.push(breakdownRow(row));
       // An explicit override outranks whatever matched first.
       if (method === "override") existing.method = "override";
       return;
@@ -187,6 +238,7 @@ export function matchInsights(rows: MetaInsightRow[], ads: Ad[]): MatchResult {
       matchedName: row.ad_name,
       matchedCount: 1,
       metaAdIds: [row.ad_id],
+      rows: [breakdownRow(row)],
     });
   }
 
@@ -273,6 +325,17 @@ export function matchInsights(rows: MetaInsightRow[], ads: Ad[]): MatchResult {
           ? "Matches several dashboard ads by name — add the DTC number to the Meta ad name."
           : "No DTC number in the name and no dashboard ad with a matching name.",
     });
+  }
+
+  // Order every roll-up by spend, highest first, and re-derive the id and name
+  // lists from that order. Rows arrive in whatever order the provider paged
+  // them, which is arbitrary; spend order is what a reader wants first and is
+  // also what the sync route assumes when it picks a thumbnail from the head of
+  // metaAdIds. Sorting in one place keeps all three consistent.
+  for (const m of acc.values()) {
+    m.rows.sort((a, b) => b.spend - a.spend);
+    m.metaAdIds = m.rows.map((r) => r.ad_id);
+    m.matchedName = m.rows.map((r) => r.ad_name).join(", ");
   }
 
   return { matches: [...acc.values()], unmatched };

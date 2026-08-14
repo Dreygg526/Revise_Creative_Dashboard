@@ -1,14 +1,15 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { X, Lock, ArrowRight, Trash2, Plus, Copy, Check, Send, RotateCcw } from "lucide-react";
+import { X, Lock, ArrowRight, Trash2, Plus, Copy, Check, Send, RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
 import { useSettings } from "@/app/hooks/useSettings";
 import { useMyRole } from "@/app/hooks/useMyRole";
+import { useMyName } from "@/app/hooks/useMyName";
 import { can } from "@/app/lib/permissions";
 import CloseOutModal from "@/app/components/modals/CloseOutModal";
 import PreLaunchModal from "@/app/components/modals/PreLaunchModal";
-import { STAGE_ORDER, checkMove, stageIndex } from "@/app/lib/gates";
-import type { Ad } from "@/app/types";
+import { STAGE_ORDER, checkMove, stageIndex, isSelfProduced } from "@/app/lib/gates";
+import type { Ad, MetaBreakdownRow } from "@/app/types";
 
 interface AdDetailModalProps {
   ad: Ad;
@@ -50,12 +51,14 @@ const sectionTitle: React.CSSProperties = {
 export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetailModalProps) {
   const { valuesFor, strategistOptions, editorOptions } = useSettings();
   const myRole = useMyRole();
+  const myName = useMyName();
   const allowTitle = can(myRole, "edit_title");
   const allowZone1 = can(myRole, "edit_zone1");
   const allowZone2 = can(myRole, "edit_zone2");
   const allowMove = can(myRole, "move_stage");
   const allowDelete = can(myRole, "delete_ad");
   const allowPerf = can(myRole, "edit_performance");
+  const allowSelfProduce = can(myRole, "self_produce");
   const showAdSetName = myRole === "Media Buyer" || myRole === "Founder";
 
   // Local editable copy of the ad. We save on blur / explicit save.
@@ -102,6 +105,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [copied, setCopied] = useState(false);
+  const [showBreakdown, setShowBreakdown] = useState(false);
   const [workflowMsg, setWorkflowMsg] = useState<string | null>(null);
 
   function set<K extends keyof Ad>(key: K, value: Ad[K]) {
@@ -124,6 +128,20 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
       const arr = [...(d[key] ?? [])];
       arr.splice(idx, 1);
       return { ...d, [key]: arr };
+    });
+  }
+
+  // "Self-produced" = the strategist made the creative themselves, so there's
+  // no editor handoff to gate. Stored as strategist === editor rather than a
+  // new column, which keeps a real name in assigned_editor for My Queue,
+  // Workload, Reports and the ad-set name. See isSelfProduced() in gates.ts.
+  function toggleSelfProduced(on: boolean) {
+    setDraft((d) => {
+      if (!on) return { ...d, assigned_editor: null };
+      // Fall back to the logged-in user when no strategist is assigned yet.
+      const who = d.assigned_strategist || myName;
+      if (!who) return d;
+      return { ...d, assigned_strategist: who, assigned_editor: who };
     });
   }
 
@@ -204,8 +222,13 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
     const { allowed, missing } = checkMove(draft, draft.stage, target);
 
     if (!allowed) {
+      // Point strategists at the escape hatch instead of making them find it.
+      const hint =
+        allowSelfProduce && missing.includes("Editor")
+          ? " Or tick “Self-produced” under Zone 2 if you made this one yourself."
+          : "";
       setGateMsg(
-        `Can’t move to ${target} yet. Fill first: ${missing.join(", ")}.`
+        `Can’t move to ${target} yet. Fill first: ${missing.join(", ")}.` + hint
       );
       return;
     }
@@ -333,6 +356,11 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
   const curIdx = stageIndex(draft.stage);
   const nextStage = curIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[curIdx + 1] : null;
   const isClosed = draft.stage === "Winner / Killed";
+
+  // Self-produced state. `selfProduceWho` is the name that would be recorded —
+  // null means we have nobody to attribute it to, so the box stays disabled.
+  const selfProduced = isSelfProduced(draft);
+  const selfProduceWho = draft.assigned_strategist || myName;
 
   // Number input helper.
 
@@ -648,11 +676,49 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
           </div>
           <div>
             <label style={labelStyle}>Editor</label>
-            <select style={inputStyle} value={draft.assigned_editor ?? ""} onChange={(e) => set("assigned_editor", e.target.value || null)}>
-              <option value="">—</option>
-              {editors.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
-            </select>
+            {selfProduced ? (
+              // The strategist isn't in the editor dropdown, so the select would
+              // render blank against their own name. Show it as text instead.
+              <div style={{ ...inputStyle, color: "var(--text-secondary)" }}>
+                {draft.assigned_editor} · self-produced
+              </div>
+            ) : (
+              <select style={inputStyle} value={draft.assigned_editor ?? ""} onChange={(e) => set("assigned_editor", e.target.value || null)}>
+                <option value="">—</option>
+                {editors.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
+              </select>
+            )}
           </div>
+
+          {/* Self-produced escape hatch — Founders + Strategists only. */}
+          {allowSelfProduce && (
+            <label
+              title={
+                selfProduceWho
+                  ? "Skips the brief link and editor requirements for this ad only."
+                  : "Assign a strategist first — the ad needs a name to record as its producer."
+              }
+              style={{
+                gridColumn: "1 / -1",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                fontSize: "13px",
+                color: selfProduceWho ? "var(--text-secondary)" : "var(--text-muted)",
+                cursor: selfProduceWho ? "pointer" : "not-allowed",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={selfProduced}
+                disabled={!selfProduceWho}
+                onChange={(e) => toggleSelfProduced(e.target.checked)}
+                style={{ width: "14px", height: "14px", accentColor: "var(--accent)", cursor: "inherit" }}
+              />
+              <span>Self-produced — I made this myself, no editor needed</span>
+            </label>
+          )}
+
           <div>
             <label style={labelStyle}>Product</label>
             <select style={inputStyle} value={draft.product ?? ""} onChange={(e) => set("product", e.target.value || null)}>
@@ -781,9 +847,33 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
                   }
                 />
               </div>
+              {/* The numbers above are a SUM. When several Meta ads rolled up,
+                  the blended CPA says nothing about any one creative, so the
+                  match is expandable rather than a wall of names. */}
+              {draft.meta_matched_count && draft.meta_matched_count > 1 ? (
+                <button
+                  onClick={() => setShowBreakdown((v) => !v)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: "5px",
+                    padding: "4px 8px 4px 5px", marginBottom: showBreakdown ? "10px" : "6px",
+                    backgroundColor: "transparent", border: "1px solid var(--border)",
+                    borderRadius: "6px", color: "var(--text-secondary)",
+                    fontSize: "11px", cursor: "pointer", fontFamily: "inherit",
+                  }}
+                >
+                  {showBreakdown ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  Matched {draft.meta_matched_count} Meta ads — {showBreakdown ? "hide" : "show"} the split
+                </button>
+              ) : null}
+
+              {showBreakdown && draft.meta_matched_count && draft.meta_matched_count > 1 ? (
+                <MetaBreakdown rows={draft.meta_breakdown} names={draft.meta_matched_name} />
+              ) : null}
+
               <div style={{ fontSize: "11px", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                Matched{draft.meta_matched_count && draft.meta_matched_count > 1 ? ` ${draft.meta_matched_count} Meta ads` : ""}
-                {draft.meta_matched_name ? ` · ${draft.meta_matched_name}` : ""}
+                {!draft.meta_matched_count || draft.meta_matched_count <= 1
+                  ? `Matched${draft.meta_matched_name ? ` · ${draft.meta_matched_name}` : ""}`
+                  : "Matched"}
                 {draft.meta_match_method ? ` · via ${draft.meta_match_method.replace("_", " ")}` : ""}
                 {` · synced ${new Date(draft.meta_synced_at).toLocaleString()}`}
               </div>
@@ -924,6 +1014,202 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
 }
 
 // Read-only stat tile for the synced Meta numbers.
+// ------------------------------------------------------------
+// PER-META-AD BREAKDOWN
+// ------------------------------------------------------------
+// A brief's meta_* numbers are a SUM over every Meta ad whose name (or ad set
+// name) carried its DTC number — variants, .1/.2 iterations, duplicated ad
+// sets, relaunches. DTC #21 sums 70 of them. That total is correct but it is
+// not a finding: one blended CPA across 70 creatives buries both the ad
+// carrying the brief and the ones bleeding out.
+//
+// Two views, deliberately in this order:
+//   1. By DTC variant — only when the names disagree about the decimal.
+//      The matcher collapses #21.1 into #21; this is the only place that
+//      shows what that assumption is costing, so it goes first.
+//   2. Every Meta ad, highest spend first.
+const money = (n: number) =>
+  n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+
+const cpaOf = (spend: number, purchases: number) =>
+  purchases > 0 ? (spend / purchases).toFixed(2) : "—";
+
+const roasOf = (revenue: number, spend: number) =>
+  spend > 0 ? (revenue / spend).toFixed(2) + "x" : "—";
+
+// One hue for every bar. Colouring by rank would make the hue meaningless.
+const BAR = "#3987e5";
+
+// Ads Manager link for a single Meta ad, in the account that ad belongs to.
+// No account recorded (rows synced before the multi-account fix) means no
+// link — a link to a guessed account lands on an empty telescope, which is
+// worse than no link at all.
+//
+// business_id matters: without it Facebook resolves `act=` in your personal
+// scope, and an account it can't resolve there silently redirects to your own
+// ad account instead of erroring. Every working Ads Manager URL from this
+// business carries it.
+export const META_BUSINESS_ID = (process.env.NEXT_PUBLIC_META_BUSINESS_ID || "1888429485321387").trim();
+
+export function adRowUrl(r: MetaBreakdownRow): string | null {
+  const acct = (r.account_id ?? "").replace(/^act_/, "").trim();
+  if (!/^\d+$/.test(acct) || !r.ad_id) return null;
+  return (
+    `https://adsmanager.facebook.com/adsmanager/manage/ads?act=${acct}` +
+    (META_BUSINESS_ID ? `&business_id=${META_BUSINESS_ID}&global_scope_id=${META_BUSINESS_ID}` : "") +
+    `&selected_ad_ids=${r.ad_id}`
+  );
+}
+
+const cell: React.CSSProperties = {
+  fontSize: "11px",
+  color: "var(--text)",
+  textAlign: "right",
+  fontVariantNumeric: "tabular-nums",
+  whiteSpace: "nowrap",
+};
+
+const headCell: React.CSSProperties = {
+  ...cell,
+  color: "var(--text-muted)",
+  fontSize: "10px",
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+};
+
+const GRID = "1fr 62px 46px 56px 46px";
+
+function MetaBreakdown({ rows, names }: { rows: MetaBreakdownRow[] | null; names: string | null }) {
+  // Pre-v5 databases, and any ad synced before v5 was applied, have the joined
+  // name string but no rows. Show what we have rather than an empty panel.
+  if (!rows || rows.length === 0) {
+    return (
+      <div style={{ marginBottom: "10px", padding: "10px", backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px" }}>
+        <div style={{ fontSize: "11px", color: "var(--text-secondary)", lineHeight: 1.5, marginBottom: names ? "8px" : 0 }}>
+          No per-ad breakdown stored yet — run a sync to record which Meta ads fed these totals.
+        </div>
+        {names ? (
+          <div style={{ fontSize: "11px", color: "var(--text-muted)", lineHeight: 1.5 }}>{names}</div>
+        ) : null}
+      </div>
+    );
+  }
+
+  const totalSpend = rows.reduce((s, r) => s + r.spend, 0);
+
+  // Group by the un-collapsed DTC token: "21" and "21.1" land in separate
+  // buckets here even though the matcher summed them into one brief.
+  const byVariant = new Map<string, { spend: number; purchases: number; revenue: number; count: number }>();
+  for (const r of rows) {
+    const key = r.variant ?? "no DTC in name";
+    const g = byVariant.get(key) ?? { spend: 0, purchases: 0, revenue: 0, count: 0 };
+    g.spend += r.spend;
+    g.purchases += r.purchases;
+    g.revenue += r.revenue;
+    g.count += 1;
+    byVariant.set(key, g);
+  }
+  const variants = [...byVariant.entries()].sort((a, b) => b[1].spend - a[1].spend);
+
+  return (
+    <div style={{ marginBottom: "12px", backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", overflow: "hidden" }}>
+      {variants.length > 1 ? (
+        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ fontSize: "10px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
+            By DTC variant
+          </div>
+          {variants.map(([label, g]) => (
+            <div key={label} style={{ marginBottom: "8px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "8px", marginBottom: "3px" }}>
+                <span style={{ fontSize: "11px", color: "var(--text)", fontWeight: 600 }}>
+                  {label === "no DTC in name" ? label : `DTC #${label}`}
+                  <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>
+                    {"  "}{g.count} {g.count === 1 ? "ad" : "ads"}
+                  </span>
+                </span>
+                <span style={{ ...cell, color: "var(--text-secondary)" }}>
+                  {money(g.spend)} · {totalSpend > 0 ? Math.round((g.spend / totalSpend) * 100) : 0}% · CPA {cpaOf(g.spend, g.purchases)}
+                </span>
+              </div>
+              <div style={{ height: "4px", backgroundColor: "var(--nested)", borderRadius: "2px", overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${totalSpend > 0 ? (g.spend / totalSpend) * 100 : 0}%`, backgroundColor: BAR, borderRadius: "2px" }} />
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: "10px", color: "var(--text-muted)", lineHeight: 1.5, marginTop: "6px" }}>
+            Decimal DTCs are treated as iterations of the same brief and summed into it. If
+            they&rsquo;re meant to be separate briefs, this split is what&rsquo;s being hidden.
+          </div>
+        </div>
+      ) : null}
+
+      <div style={{ padding: "10px 12px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: GRID, gap: "8px", paddingBottom: "6px", borderBottom: "1px solid var(--border)", marginBottom: "6px" }}>
+          <div style={{ ...headCell, textAlign: "left" }}>Meta ad</div>
+          <div style={headCell}>Spend</div>
+          <div style={headCell}>Purch</div>
+          <div style={headCell}>CPA</div>
+          <div style={headCell}>ROAS</div>
+        </div>
+
+        {/* Long lists scroll inside the panel rather than pushing the rest of
+            the modal (the manual override field) out of reach. */}
+        <div style={{ maxHeight: "300px", overflowY: "auto" }}>
+          {rows.map((r) => (
+            <div
+              key={r.ad_id}
+              style={{ display: "grid", gridTemplateColumns: GRID, gap: "8px", alignItems: "center", padding: "5px 0", borderBottom: "1px solid var(--border)" }}
+            >
+              <div style={{ minWidth: 0 }}>
+                {/* Linked per row, using the row's OWN account. This shop runs
+                    six Meta ad accounts, and an ad opened against the wrong
+                    one reads as "No ads found" — which looks exactly like the
+                    match being invented. */}
+                {adRowUrl(r) ? (
+                  <a
+                    href={adRowUrl(r)!}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontSize: "11px", color: "var(--text)", textDecoration: "none", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    title={`${r.ad_name} — open in Ads Manager (${r.account_id})`}
+                  >
+                    {r.ad_name}
+                  </a>
+                ) : (
+                  <div style={{ fontSize: "11px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.ad_name}>
+                    {r.ad_name}
+                  </div>
+                )}
+                {/* The account is shown, not just linked. This shop runs six,
+                    and "which account is this in" turned out to be the single
+                    most confusing thing about the roll-up. */}
+                {r.account_id || r.adset_name ? (
+                  <div style={{ fontSize: "10px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={`${r.account_id ?? ""} ${r.adset_name ?? ""}`.trim()}>
+                    {r.account_id ? (
+                      <span style={{ color: "var(--text-secondary)" }}>{r.account_id}</span>
+                    ) : null}
+                    {r.account_id && r.adset_name ? " · " : ""}
+                    {r.adset_name ?? ""}
+                  </div>
+                ) : null}
+              </div>
+              <div style={cell}>{money(r.spend)}</div>
+              <div style={cell}>{r.purchases}</div>
+              <div style={cell}>{cpaOf(r.spend, r.purchases)}</div>
+              <div style={{ ...cell, color: "var(--text-secondary)" }}>{roasOf(r.revenue, r.spend)}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontSize: "10px", color: "var(--text-muted)", lineHeight: 1.5, marginTop: "8px" }}>
+          Highest spend first. ROAS is revenue ÷ ad spend and is margin-blind — 1.00x means the
+          ad spend came back, not that it made money.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MetaStat({ label, value }: { label: string; value: string }) {
   return (
     <div>

@@ -41,6 +41,7 @@ interface TripleWhaleRow {
   ad_name?: string | null;
   adset_name?: string | null;
   campaign_name?: string | null;
+  account_id?: string | null;
   ad_image_url?: string | null;
   spend?: number | string | null;
   purchases?: number | string | null;
@@ -76,6 +77,7 @@ const QUERY = `
     ad_name,
     adset_name,
     campaign_name,
+    any(account_id)      AS account_id,
     any(ad_image_url)    AS ad_image_url,
     SUM(spend)           AS spend,
     SUM(orders_quantity) AS purchases,
@@ -258,6 +260,9 @@ export async function fetchTripleWhaleRows(datePreset: string): Promise<Provider
       ad_name: r.ad_name ?? "",
       adset_name: r.adset_name ?? null,
       campaign_name: r.campaign_name ?? null,
+      // This shop spends across SIX Meta ad accounts. Carrying the account per
+      // row is what makes an Ads Manager link land somewhere the ad exists.
+      account_id: r.account_id ? String(r.account_id) : null,
       spend: num(r.spend),
       purchases: num(r.purchases),
       revenue: num(r.revenue),

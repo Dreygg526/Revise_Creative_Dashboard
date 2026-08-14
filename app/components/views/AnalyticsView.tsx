@@ -8,7 +8,7 @@ import { useMyRole } from "@/app/hooks/useMyRole";
 import { useMetaSync, useLastSyncRun, DATE_PRESETS, type UnmatchedMetaAd } from "@/app/hooks/useMetaSync";
 import { can } from "@/app/lib/permissions";
 import { effectivePerf, type Ad } from "@/app/types";
-import AdDetailModal from "@/app/components/modals/AdDetailModal";
+import AdDetailModal, { META_BUSINESS_ID } from "@/app/components/modals/AdDetailModal";
 import AnalyticsOverview from "@/app/components/analytics/AnalyticsOverview";
 
 // The dimensions you can group by. `key` is the Ad field, `label` is shown.
@@ -113,13 +113,36 @@ export default function AnalyticsView() {
     return null;
   }, [result, lastRun]);
 
-  // Strip the "act_" prefix — Ads Manager wants the bare numeric id.
-  const adsManagerAccount = (shownResult?.accountId ?? "").replace(/^act_/, "");
+  // Ads Manager wants the bare numeric Meta ad account id, and WHICH account
+  // has to come from the ad itself.
+  //
+  // This shop spends across six Meta ad accounts (act_1123078669636137 alone
+  // is $1.8M of $3.1M). Two earlier versions of this link got it wrong: the
+  // first passed the sync result's accountId, which under Triple Whale is the
+  // Shopify domain, so Facebook discarded the query string entirely; the
+  // second hardcoded one account, which is right for about 17% of spend and
+  // shows a "No ads found" telescope for the rest — for ads that exist.
+  //
+  // meta_breakdown is spend-sorted, so [0] is the account holding the biggest
+  // slice of this brief. The env var is only the last-resort fallback for ads
+  // synced before the account was recorded.
+  const fallbackAccount = (process.env.NEXT_PUBLIC_META_AD_ACCOUNT_ID || "act_2223260745102430")
+    .replace(/^act_/, "")
+    .trim();
 
-  function adsManagerUrl(metaAdIds: string[] | null): string | null {
-    if (!adsManagerAccount || !metaAdIds || metaAdIds.length === 0) return null;
+  function adsManagerUrl(ad: Ad): string | null {
+    const metaAdIds = ad.meta_ad_ids;
+    if (!metaAdIds || metaAdIds.length === 0) return null;
+
+    const fromAd = ad.meta_breakdown?.find((r) => r.account_id)?.account_id ?? null;
+    const adsManagerAccount = (fromAd ?? fallbackAccount).replace(/^act_/, "").trim();
+    // A non-numeric id would rebuild the same broken link — no link is better.
+    if (!/^\d+$/.test(adsManagerAccount)) return null;
     return (
       `https://adsmanager.facebook.com/adsmanager/manage/ads?act=${adsManagerAccount}` +
+      // Without business_id, Facebook resolves the account in your personal
+      // scope and silently redirects to your own ad account when it can't.
+      (META_BUSINESS_ID ? `&business_id=${META_BUSINESS_ID}&global_scope_id=${META_BUSINESS_ID}` : "") +
       `&selected_ad_ids=${metaAdIds.slice(0, 50).join(",")}`
     );
   }
@@ -456,7 +479,7 @@ export default function AnalyticsView() {
                         .sort((a, b) => (effectivePerf(b).spend ?? 0) - (effectivePerf(a).spend ?? 0))
                         .map((ad) => {
                           const perf = effectivePerf(ad);
-                          const url = adsManagerUrl(ad.meta_ad_ids);
+                          const url = adsManagerUrl(ad);
                           const rollup = ad.meta_matched_count ?? 0;
                           return (
                             <tr key={ad.id} style={{ borderTop: "1px solid var(--border)", backgroundColor: "var(--nested)" }}>

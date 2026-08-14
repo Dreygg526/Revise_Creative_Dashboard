@@ -188,6 +188,10 @@ async function fetchMetaRows(opts: {
         ad_name: raw.ad_name ?? "",
         adset_name: raw.adset_name ?? null,
         campaign_name: raw.campaign_name ?? null,
+        // Meta direct queries one account at a time, so every row in this
+        // page belongs to the account we asked for. Triple Whale is the
+        // provider that spans accounts and reports it per row.
+        account_id: accountId,
         spend: num(raw.spend),
         purchases: extractPurchaseMetric(raw.actions),
         revenue: extractPurchaseMetric(raw.action_values),
@@ -320,6 +324,15 @@ export async function POST(req: Request) {
       canWriteImage = !probeErr;
     }
 
+    // meta_breakdown arrives in schema v5. Same probe, same reason: a missing
+    // per-ad breakdown is not worth failing every row update over.
+    const { error: breakdownProbeErr } = await admin.from("ads").select("meta_breakdown").limit(1);
+    const canWriteBreakdown = !breakdownProbeErr;
+
+    // A brief with a runaway number of ad sets shouldn't bloat its row. The
+    // rows are spend-sorted, so the cap drops the tail that nobody scrolls to.
+    const BREAKDOWN_LIMIT = 200;
+
     if (!dryRun) {
       for (const m of matches) {
         // Several Meta ads can roll into one brief; take the first thumbnail
@@ -330,6 +343,7 @@ export async function POST(req: Request) {
           .from("ads")
           .update({
             ...(canWriteImage ? { meta_ad_image_url: image } : {}),
+            ...(canWriteBreakdown ? { meta_breakdown: m.rows.slice(0, BREAKDOWN_LIMIT) } : {}),
             meta_spend: m.spend,
             meta_purchases: m.purchases,
             meta_revenue: m.revenue,

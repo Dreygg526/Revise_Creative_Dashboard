@@ -15,7 +15,8 @@ export type Action =
   | "batch_delete"
   | "manage_team"       // invite, change roles, remove members
   | "manage_lists"      // Settings dropdown lists
-  | "review_ad";        // Approve / Request revision in Review stage
+  | "review_ad"         // Approve / Request revision in Review stage
+  | "self_produce";     // Mark an ad as made without an editor (skips the Brief gate)
 
 // Normalize: Graphic Designer is treated as Editor.
 function normalize(role: string | null): string {
@@ -36,6 +37,7 @@ const RULES: Record<Action, string[]> = {
   manage_team:      ["Founder"],            // Founder only
   manage_lists:     ["Founder", "Strategist"],
   review_ad:        ["Founder", "Strategist", "Editor"], // Graphic Designer normalizes to Editor
+  self_produce:     ["Founder", "Strategist"],           // deliberately NOT Editor — it would let them skip their own handoff
 };
 
 // The core check: can this role perform this action?

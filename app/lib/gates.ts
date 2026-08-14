@@ -26,6 +26,22 @@ export type Stage = (typeof STAGE_ORDER)[number];
 // labels. Empty list = nothing missing = move allowed.
 type GateRule = (ad: Ad) => string[];
 
+// SELF-PRODUCED ADS
+// A strategist who makes the creative themselves (typically a static) has no
+// editor to brief and no brief doc to hand over, so the Brief gate's two
+// fields are pure paperwork for them.
+//
+// This is stored as "strategist === editor" rather than a dedicated column:
+// the ad then carries a real person's name everywhere that reads
+// assigned_editor (My Queue, Workload, Reports, the ad-set name builder)
+// instead of a sentinel string those screens would have to learn about.
+// The "Self-produced" checkbox in AdDetailModal is what sets it.
+export function isSelfProduced(ad: Ad): boolean {
+  const strategist = ad.assigned_strategist?.trim();
+  const editor = ad.assigned_editor?.trim();
+  return !!strategist && !!editor && strategist === editor;
+}
+
 // Rules are keyed by the stage you are LEAVING (moving forward from).
 // e.g. GATES["Idea"] runs when moving Idea -> Brief.
 const GATES: Partial<Record<Stage, GateRule>> = {
@@ -40,7 +56,10 @@ const GATES: Partial<Record<Stage, GateRule>> = {
   },
 
   // Brief -> In Production : brief link + editor assigned.
+  // Both exist to hand the work to a second person, so a self-produced ad
+  // skips them entirely — there is no handoff to gate.
   Brief: (ad) => {
+    if (isSelfProduced(ad)) return [];
     const missing: string[] = [];
     if (!ad.brief_link) missing.push("Brief link");
     if (!ad.assigned_editor) missing.push("Editor");

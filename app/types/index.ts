@@ -73,6 +73,10 @@ export interface Ad {
   meta_matched_name: string | null;
   meta_matched_count: number | null;
   meta_ad_ids: string[] | null;
+  // The individual Meta ads that summed into the totals above (schema v5).
+  // Null until v5 is run and a sync has run. Read-only — written by
+  // /api/meta-sync, never by the modal's persist().
+  meta_breakdown: MetaBreakdownRow[] | null;
   // Creative thumbnail (schema v4). Triple Whale's CDN copy, so it doesn't
   // expire with an access token. Null until v4 is run and a sync has run.
   meta_ad_image_url: string | null;
@@ -219,6 +223,31 @@ export type MetaMatchMethod =
   | 'dtc_adset'
   | 'dtc_campaign'
   | 'ad_name';
+
+// One Meta ad that fed a brief's rolled-up meta_* totals (schema v5).
+// Stored as JSON on ads.meta_breakdown, highest spend first.
+//
+// `variant` is the FULL DTC token including any decimal — "21" vs "21.1".
+// The matcher deliberately collapses decimals into their integer parent, so
+// #21, #21.1 and #21.2 all land on dashboard DTC 21. Keeping the un-collapsed
+// token here is what lets the UI show how much of a brief's spend is actually
+// its iterations, which is the evidence needed to decide whether collapsing
+// them is right. Null when the names carried no parseable DTC number (an
+// override or ad_name match).
+export interface MetaBreakdownRow {
+  ad_id: string;
+  ad_name: string;
+  adset_name: string | null;
+  // The Meta ad account this ad lives in ("act_…"). Null on rows written
+  // before the multi-account fix, or from a provider that didn't report it.
+  account_id: string | null;
+  variant: string | null;
+  spend: number;
+  purchases: number;
+  revenue: number;
+  impressions: number;
+  clicks: number;
+}
 
 // Where a displayed performance number came from.
 export type PerfSource = 'meta' | 'manual' | 'none';
