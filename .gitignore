@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local scratch — standalone compiles of the pure libs (see CLAUDE.md > Commands)
+/.scratch/

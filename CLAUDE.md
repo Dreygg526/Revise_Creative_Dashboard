@@ -22,9 +22,21 @@ There is no test suite. Verify changes by running `npm run dev` and exercising t
 `app/lib/metaMatch.ts` is pure and imports only types, so it can be exercised without the app — compile it standalone and drive it from Node:
 
 ```bash
-npx tsc app/lib/metaMatch.ts --outDir /tmp/mm --module esnext --target es2020 \
+npx tsc app/lib/metaMatch.ts --outDir .scratch/mm --module esnext --target es2020 \
   --moduleResolution bundler --skipLibCheck   # the @/app/types error is expected; it still emits
-node --input-type=module -e 'import("/tmp/mm/metaMatch.js").then(m => console.log(m.extractDtcNumber("DTC 142 | 9x16")))'
+node --input-type=module -e 'import("./.scratch/mm/metaMatch.js").then(m => console.log(m.extractDtcNumber("DTC 142 | 9x16")))'
+```
+
+**Use a repo-relative `--outDir`, not `/tmp`.** This is a Windows machine: Git Bash rewrites `/tmp` when it's a bare argument (so `tsc` emits to the real temp dir) but *not* inside the quoted `import(...)` string, where Node reads it as `C:\tmp` — the compile appears to succeed and the `node` line then dies with `ERR_MODULE_NOT_FOUND`. `.scratch/` is gitignored.
+
+`app/lib/gates.ts` is pure the same way, so the same trick tests pipeline gates without logging into the app — the only practical way to check a gate change against all seven forward transitions:
+
+```bash
+npx tsc app/lib/gates.ts --outDir .scratch/gt --module esnext --target es2020 \
+  --moduleResolution bundler --skipLibCheck   # same expected @/app/types error
+node --input-type=module -e 'import("./.scratch/gt/gates.js").then(g =>
+  console.log(g.checkMove({ assigned_strategist: "Rob", assigned_editor: "Rob" }, "Brief", "In Production")))'
+# -> { allowed: true, missing: [] }   (self-produced clears the Brief gate)
 ```
 
 ## Environment
@@ -53,7 +65,8 @@ Internal creative-ops dashboard for a DTC ad agency ("Revise"). It tracks ads th
 **Auth flow** (`app/hooks/useAuth.tsx`, a React context): `page.tsx` gates on it — `loading` → spinner, `needsPassword` → `SetPasswordPage`, no `session` → `LoginPage`, else the dashboard. Users are created by invite (`/api/invite`), not self-signup; invited/recovery users are detected via Supabase auth events or a `type=invite`/`type=recovery` URL hash and forced through password setup, which also flips their `team_members.status` to `active`.
 
 **Roles & permissions are two separate systems — keep them distinct:**
-- `app/lib/permissions.ts` — *who can do what*. `can(role, action)` checks a `RULES` table of `Action`s. Note the quirk: **Graphic Designer normalizes to Editor** (same permissions). This is the single source of truth for UI gating (create/edit/delete/review/manage). The logged-in user's role comes from `useMyRole()`, which looks it up in `team_members` by email. Current grants beyond Founder/Strategist: **Editor** has `create_ad`, `edit_title`, `edit_zone1`, `edit_zone2`, `move_stage`, `review_ad`; **Media Buyer** has `edit_zone2`, `move_stage`, `edit_performance`. Deletion (`delete_ad`, `batch_delete`) and `manage_lists` stay Founder + Strategist; `manage_team` is Founder-only. One asymmetry worth knowing: Editors can delete *ideas* (the Ideas view gates those buttons on `create_ad`) but not *ads*.
+- `app/lib/permissions.ts` — *who can do what*. `can(role, action)` checks a `RULES` table of `Action`s. Note the quirk: **Graphic Designer normalizes to Editor** (same permissions). This is the single source of truth for UI gating (create/edit/delete/review/manage). The logged-in user's role comes from `useMyRole()`, which looks it up in `team_members` by email. Current grants beyond Founder/Strategist: **Editor** has `create_ad`, `edit_title`, `edit_zone1`, `edit_zone2`, `move_stage`, `review_ad`; **Media Buyer** has `edit_zone2`, `move_stage`, `edit_performance`. Deletion (`delete_ad`, `batch_delete`), `manage_lists` and `self_produce` stay Founder + Strategist; `manage_team` is Founder-only. One asymmetry worth knowing: Editors can delete *ideas* (the Ideas view gates those buttons on `create_ad`) but not *ads*. **`self_produce` is deliberately not Editor** — Graphic Designer normalizes to Editor, so granting it there would also hand it to every editor and let them skip their own review handoff.
+- **Ads store names, not emails, in every assignment field** (`assigned_strategist` / `assigned_editor` / `assigned_media_buyer`). Anything asking "is this mine?" has to resolve the session email to a `team_members.name` first — that's `useMyName()`, the sibling of `useMyRole()`. `MyQueueView`, `WorkloadView` and the self-produced checkbox all compare against it; don't reach for `session.user.email`.
 - `app/lib/gates.ts` — *what an ad needs before it advances*. `checkMove(ad, from, to)` returns `{ allowed, missing }`. Backward/same-stage moves are always free; forward moves must satisfy every `GATES` rule between the two stages. `STAGE_ORDER` (7 stages, Idea → Winner/Killed) is the canonical pipeline order.
 
 **Self-produced ads — `assigned_strategist === assigned_editor` is the flag.** Strategists make some creative themselves (usually statics) and were blocked by the Brief gate's `Brief link` + `Editor`, both of which exist only to hand work to a second person. `isSelfProduced()` in `gates.ts` drops both when the strategist is also the editor; the "Self-produced" checkbox in `AdDetailModal` (gated on the `self_produce` action — Founder + Strategist, deliberately **not** Editor) is what writes that. Things this encoding depends on:
