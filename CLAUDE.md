@@ -46,6 +46,7 @@ The app needs these env vars (Vercel: Project Settings > Environment Variables; 
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — browser-side Supabase client (`lib/supabaseClient.ts`).
 - `SUPABASE_SERVICE_ROLE_KEY` — server-only, used by `app/api/invite` and `app/api/delete-member` to call Supabase admin auth. Never expose to the client.
 - `ANTHROPIC_API_KEY` — server-only, used by `app/api/generate-copy` (the Copy Agent).
+- `AGENT_API_KEY` — server-only. The shared secret for `app/api/agent/*` (Axel's OpenClaw). **Anything under 32 characters is treated as unset and every agent request 401s**, so the integration fails closed rather than open. Rotate by replacing the value and redeploying; there's no key list. See `AGENT_API.md`.
 - `TRIPLE_WHALE_API_KEY` — server-only. **Its presence is what selects the provider** (`activeProvider()` in `app/lib/tripleWhale.ts`): set it and syncs pull from Triple Whale, unset it and they fall back to Meta direct. Needs the `Pixel Attribution: Read` scope (plus `Summary Page: Read`); no write scope. Never expose to the client.
 - `TRIPLE_WHALE_SHOP_ID` — optional, defaults to `rcv9b7-p1.myshopify.com`. Must be the `myshopify.com` domain, not the customer-facing one.
 - `META_ACCESS_TOKEN` — server-only, used by `app/api/meta-sync` when no Triple Whale key is set. Long-lived (60-day) or System User token with `ads_read`. Never expose to the client.
@@ -148,6 +149,16 @@ Consequences, all of them load-bearing:
 
 **API routes** (`app/api/*/route.ts`) exist only for operations that need a secret key server-side: `invite` and `delete-member` (Supabase service-role admin), `generate-copy` (Anthropic), `meta-sync` (Meta / Triple Whale), and `perf-series` (Triple Whale daily totals for the KPI sparklines — read-only, so it verifies the session but doesn't require `edit_performance`). `generate-copy` holds a large server-side "copy DNA" prompt library and calls the Messages API directly via `fetch`; it must return raw JSON parseable into `{ headlines, ad_copies }`.
 
+**Two ways to authenticate a route, both in `app/lib/apiAuth.ts`.** `requireMember(req, admin, action)` verifies a Supabase session token and checks `can(role, action)` — every browser-facing route uses it. `requireAgentKey(req)` compares a shared secret against `AGENT_API_KEY` and is only for machines. Both return a discriminated union and both must run **before** the route reports anything about server config, so an anonymous caller can't probe env state.
+
+**Agent API** (`app/api/agent/*`) — the door for Axel's OpenClaw, which reads what's waiting in the pipeline and launches those ads to Meta on its own. Full docs for the consumer live in `AGENT_API.md`. What matters here:
+- **`GET /api/agent/ads` is an explicit column allow-list, not `select("*")`.** A new column on `ads` does not become visible to the integration until it's added to `FIELDS`. That's what keeps close-out numbers, learnings and the `meta_*` roll-ups out of a key that has no reason to see them.
+- **`POST /api/agent/ads/:id/meta-ad-id` is the only write the key can make, and it writes one column.** A compromised agent key cannot move stages, edit briefs, or delete. That bound is the whole security argument for handing the key out — don't widen it without replacing it with per-scope keys.
+- It exists because `ads.meta_ad_id` is the **top-precedence** rule in `matchInsights()`. A launcher that posts back the id Meta returned turns attribution for that ad from name-parsing inference into fact.
+- Meta ad ids exceed `Number.MAX_SAFE_INTEGER`, so the route **rejects a JSON number** rather than storing one that already lost precision in transit. Strings only.
+- **The dashboard has no write access to Meta and gains none here.** `frame_io_link` is a link; we have never stored the creative file itself, so anything that uploads to Meta needs Frame.io credentials of its own.
+- Key comparison hashes both sides before `timingSafeEqual` — raw strings of different lengths make it throw, and the throw leaks the real key's length. A key under 32 chars is treated as unset, so a placeholder can't become a live credential.
+
 ## Project status
 
 Snapshot as of **2026-08-14**, re-verified against the tree that day (the measurements below keep their own dates). Update this when the situation changes; delete lines once they stop being true.
@@ -191,7 +202,9 @@ Snapshot as of **2026-08-14**, re-verified against the tree that day (the measur
 
 **Self-produced ads — built 2026-08-14**, from Rob's ask (creative strategists making their own statics were forced to name an editor and paste a brief link for work they'd already finished). Scoped to the whole Strategist role, not one person. See the `isSelfProduced` note under Roles & permissions for how it's stored.
 
-**Unaddressed security note:** `app/api/invite` and `app/api/delete-member` don't verify the caller. Anyone who knows the URL can POST and trigger a real Supabase invite (including `role: "Founder"`) or a member deletion. `meta-sync` shows the pattern to copy — verify the session, then check `can(role, action)`.
+**Agent API — built 2026-08-17**, from Axel's ask (he wanted OpenClaw to launch the ads sitting in Ready to Launch automatically). He's building the Meta side himself, so this is only the read half: `GET /api/agent/ads` plus the one-column `meta-ad-id` write-back. Verified live against the dev server — 19 ads currently in Ready to Launch, and the missing-key / wrong-key / bad-uuid / numeric-id / unknown-ad paths all return the right status. The write path's happy case is the one thing not exercised end-to-end (it would have meant writing to the live DB). `AGENT_API_KEY` still has to be set in `.env.local` and Vercel — until it is, every agent request 401s by design.
+
+**`invite` and `delete-member` now verify the caller** (fixed 2026-08-17). Both require a session and `manage_team`; `delete-member` also refuses to delete the caller's own account, which would sign them out and could leave nobody able to manage the team. `useTeam.ts` sends the access token on both. Previously anyone who knew the URL could POST and mint themselves a Founder login.
 
 ## Styling
 

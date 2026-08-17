@@ -1,27 +1,30 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { requireMember, serviceClient } from "@/app/lib/apiAuth";
 
 // This route runs ONLY on the server. It uses the service_role key
 // (never exposed to the browser) to send a Supabase invite email.
+export const runtime = "nodejs";
+
 export async function POST(req: Request) {
   try {
+    // Verify the caller BEFORE reading the body or reporting server config.
+    // This route can mint a Founder login, so an unauthenticated POST used to
+    // be a full account-takeover path for anyone who knew the URL.
+    const admin = serviceClient();
+    if (!admin) {
+      return NextResponse.json({ error: "Server is missing the service role key." }, { status: 500 });
+    }
+
+    const auth = await requireMember(req, admin, "manage_team");
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
+    }
+
     const { email, name, role } = await req.json();
 
     if (!email || !name || !role) {
       return NextResponse.json({ error: "Missing name, email, or role." }, { status: 400 });
     }
-
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-    if (!serviceKey) {
-      return NextResponse.json({ error: "Server is missing the service role key." }, { status: 500 });
-    }
-
-    // Admin client (server-only).
-    const admin = createClient(supabaseUrl, serviceKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
 
     // 1) Send the Supabase invite email. We stash name + role in metadata.
     const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {

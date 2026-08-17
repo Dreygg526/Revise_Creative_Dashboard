@@ -22,12 +22,24 @@ export function useTeam() {
 
   useEffect(() => { fetchTeam(); }, [fetchTeam]);
 
+  // /api/invite and /api/delete-member verify the caller's session and check
+  // manage_team, so both need the access token — same pattern as useMetaSync.
+  async function authHeaders(): Promise<Record<string, string> | null> {
+    const { data } = await supabase.auth.getSession();
+    const token = data?.session?.access_token;
+    if (!token) return null;
+    return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+  }
+
   // Invite via the secure server route (sends email + creates row).
   async function inviteMember(name: string, email: string, role: string): Promise<{ error: string | null }> {
     try {
+      const headers = await authHeaders();
+      if (!headers) return { error: "You're not signed in. Refresh the page and try again." };
+
       const res = await fetch("/api/invite", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ name, email, role }),
       });
       const json = await res.json();
@@ -59,9 +71,12 @@ export function useTeam() {
   // via the secure server route (service_role key stays server-side).
   async function removeMember(id: string, email: string): Promise<{ error: string | null }> {
     try {
+      const headers = await authHeaders();
+      if (!headers) return { error: "You're not signed in. Refresh the page and try again." };
+
       const res = await fetch("/api/delete-member", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ email }),
       });
       const json = await res.json();
