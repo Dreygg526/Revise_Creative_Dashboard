@@ -98,6 +98,25 @@ curl -H "Authorization: Bearer $AGENT_API_KEY" \
 `truncated: true` means there were at least `limit` matches — page with a
 higher `limit` or a tighter `since`.
 
+### Fields that are empty in practice
+
+Measured across all 99 ads on 2026-08-17. Some fields exist in the schema but
+nobody fills them in, so don't design around them:
+
+| field | filled | |
+|---|---|---|
+| `selected_headline` | **0/99** | never used — write your own copy |
+| `selected_ad_copy` | **0/99** | same |
+| `script_hook` | **0/99** | same |
+| `assigned_media_buyer` | **0/99** | can't route by media buyer yet |
+| `frame_io_link` | 68/99 — **12 of the 19** in Ready to Launch | see below |
+| `destination_url_primary` | 93/99 — **19/19** in Ready to Launch | safe to depend on |
+| `brief_link` | 98/99 | safe to depend on |
+
+**The Frame.io gap is the one that will bite.** Roughly a third of the ads in
+Ready to Launch have no creative link at all. A launcher needs to skip those
+and say so, not fail silently or launch something empty.
+
 ### The creative file is not here
 
 This is the one thing likely to trip up the launcher. **The dashboard stores a
