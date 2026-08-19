@@ -20,6 +20,12 @@ export interface Ad {
   // ---- Pipeline ----
   stage: string;                 // one of the 7 placeholder stages (editable list)
   result: string | null;         // 'Winner' | 'Killed' | null (only set at close)
+  // Who set `result` (agent_result_schema.sql). 'agent' = written through
+  // /api/agent/ads/{id}/result; null = set by a person in the close-out modal,
+  // which doesn't write this column. Lets an agent's verdicts be found and
+  // undone as a group if its ranking turns out to be wrong.
+  result_source: string | null;
+  result_set_at: string | null;  // ISO timestamp; unlike updated_at, only moves when the verdict does
   priority: string | null;       // 'Low' | 'Medium' | 'High' (editable list)
 
   // ---- ZONE 1: STRATEGY (gate: filled before brief starts) ----

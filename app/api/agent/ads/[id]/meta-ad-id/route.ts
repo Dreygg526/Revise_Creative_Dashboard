@@ -1,5 +1,8 @@
 // ============================================================
-// AGENT API — the one write the agent key is allowed to make.
+// AGENT API — write back the Meta ad id after a launch.
+//
+// One of two writes the agent key can make; the other is
+// ../result, which ranks the ad Winner or Killed.
 //
 //   POST /api/agent/ads/<ad id>/meta-ad-id
 //   Authorization: Bearer <AGENT_API_KEY>
@@ -11,9 +14,9 @@
 // it we're inferring the link from `DTC #82`-style strings — which works,
 // but is inference.
 //
-// This route can write exactly one column. It cannot touch stage, spend,
+// This route can write exactly one column. It cannot touch spend,
 // assignments, or anything else, so a compromised agent key still can't
-// move work through the pipeline or alter a brief.
+// alter a brief.
 // ============================================================
 
 import { NextResponse } from "next/server";

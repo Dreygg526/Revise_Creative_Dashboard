@@ -40,6 +40,10 @@ const FIELDS = [
   "ad_name",
   "product",
   "stage",
+  // The verdict only — not spend/purchases/cvr/learning. It's here because
+  // the agent writes it via POST .../result and needs to read back what it
+  // set (and what a human set) to stay idempotent.
+  "result",
   "priority",
   "format",
   "ad_type",

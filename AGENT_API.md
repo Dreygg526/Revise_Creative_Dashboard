@@ -12,8 +12,11 @@ has no session, so this is a separate entrance with a separate secret.
 | | |
 |---|---|
 | Read ads by pipeline stage | yes |
-| Write back a Meta ad id | yes — that one column, nothing else |
-| Change stage, spend, assignments, briefs | **no** |
+| Write back a Meta ad id | yes |
+| Rank an ad Winner / Killed, with a learning | yes |
+| Close an ad out (stage → `Winner / Killed`) | yes — that stage only, never any other |
+| Move an ad anywhere else in the pipeline | **no** |
+| Change spend, assignments, briefs, titles | **no** |
 | Delete anything | **no** |
 | Read team members, settings, logins | **no** |
 | Launch anything on Meta | **no** — the dashboard has no write access to Meta at all |
@@ -42,6 +45,10 @@ request returns 401 — the integration fails closed, and the server logs
 
 To rotate: replace the value and redeploy. The old key stops working
 immediately; there is no key list to prune.
+
+Then run `agent_result_schema.sql` against the Supabase project. It only adds
+the two attribution columns behind `POST .../result`; the endpoint works
+without it, it just can't tell agent-set verdicts from human ones.
 
 ## `GET /api/agent/ads`
 
@@ -76,6 +83,8 @@ curl -H "Authorization: Bearer $AGENT_API_KEY" \
       "dtc_number": 142,
       "ad_name": "Gut reset — hook B",
       "product": "…",
+      "stage": "Ready to Launch",
+      "result": null,
       "format": "Video Ad",
       "selected_headline": "…",
       "selected_ad_copy": "…",
@@ -161,6 +170,95 @@ ahead of every name-parsing fallback. Posting the real id turns spend
 attribution for that ad from inference into fact — and it's the escape hatch
 for ads whose names don't carry a DTC number at all.
 
+## `POST /api/agent/ads/{id}/result`
+
+Rank an ad **Winner** or **Killed** once you've seen how it performed.
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $AGENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"result":"Winner","learning":"Hook B held to 3s at 2.1x ROAS over 9 days.","close":true}' \
+  "https://<your-domain>/api/agent/ads/8f2c…/result"
+```
+
+### Body
+
+| field | required | notes |
+|---|---|---|
+| `result` | yes | `"Winner"` or `"Killed"`. `null` clears it. |
+| `learning` | no | Free text, max 2000 chars — one or two sentences on *why*. Omit the field to leave any existing learning alone; send `null` to clear it. |
+| `close` | no | `false` by default. `true` also moves the ad to the `Winner / Killed` stage. |
+
+**The word is `Killed`, not `Loser`** — that exact spelling is what the
+Learnings view, Reports and the pipeline badge match on. You can send
+`loser`, `looser`, `lost`, `win`, `w`, `l` and so on; they're normalised to
+`Winner` / `Killed` and the response tells you what it stored:
+
+```json
+{ "normalized": { "from": "Looser", "to": "Killed" } }
+```
+
+Anything not in that list is a **400**, not a guess — a typo won't quietly
+write a value no screen can see.
+
+### `close`: tag vs. close out
+
+- **`close` omitted** — writes the verdict and leaves the ad where it is. Use
+  this while a test is still running and you're calling it early, or if you
+  want a person to do the final close-out.
+- **`close: true`** — also moves the ad to `Winner / Killed`, the last stage.
+  This is the only stage value this API can ever write; there is no way to
+  push an ad to `Brief`, `Testing` or anywhere else through it.
+
+Closing without a `learning` works but comes back with a warning: the
+Learnings view only lists closed ads that have one, so the ad won't show up
+there.
+
+### Response
+
+```json
+{
+  "ok": true,
+  "ad": {
+    "id": "8f2c…",
+    "dtc_number": 142,
+    "ad_name": "Gut reset — hook B",
+    "stage": "Winner / Killed",
+    "result": "Winner",
+    "learning": "Hook B held to 3s at 2.1x ROAS over 9 days."
+  },
+  "normalized": null,
+  "stage_changed": { "from": "Testing", "to": "Winner / Killed" },
+  "previous_result": null,
+  "attribution_recorded": true,
+  "warnings": []
+}
+```
+
+`stage_changed` is `null` when the stage didn't move. `previous_result` lets
+you see whether you're overwriting a verdict — including one a person set, so
+re-posting is safe to make idempotent on your side.
+
+### Every write is stamped
+
+Agent-set verdicts are recorded as `result_source = 'agent'` with a
+`result_set_at` timestamp; verdicts a person sets in the dashboard leave those
+null. If a ranking run turns out to be wrong, its writes can be found and
+reverted as a group without touching anyone's manual close-outs.
+
+That needs `agent_result_schema.sql` to have been run. If it hasn't, the write
+still succeeds and the response carries `attribution_recorded: false` plus a
+warning.
+
+### Why this matters more than it looks
+
+Before this endpoint, **0 of 99 ads carried a result**. That's why the
+Learnings view is empty and why the Win rate column was pulled out of
+Analytics — not bugs, just a field nobody filled. Ranking ads through here
+brings all of that back to life, which is the "accurate tracking" half of the
+loop.
+
 ## Errors
 
 | status | meaning |
@@ -179,7 +277,10 @@ so a prober can't learn whether the integration is switched on.
   Launch a few times a day, not a few times a minute.
 - **OpenClaw reads untrusted input.** It takes instructions from WhatsApp and
   Discord messages, so a crafted message could try to make it call this API in
-  ways nobody intended. That's why the key can't move stages or delete: the
-  blast radius of a hijacked agent is reading a list and writing one id.
+  ways nobody intended. That's why the writes are shaped the way they are: the
+  worst a hijacked agent can do is read the pipeline, write a wrong Meta ad id,
+  and mislabel outcomes — all of it reversible from the dashboard, and the
+  mislabelling is stamped `result_source = 'agent'` so it can be found. It
+  still cannot move work through the pipeline, edit a brief, or delete.
 - **The key is a full read of the pipeline.** Treat it like a password. If it
   leaks, rotate it — see Setup.
