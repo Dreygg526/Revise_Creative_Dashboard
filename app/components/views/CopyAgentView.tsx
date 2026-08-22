@@ -19,6 +19,15 @@ const inputStyle: React.CSSProperties = {
 const labelStyle: React.CSSProperties = {
   display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px",
 };
+// Google's Files API caps a single file at 2GB (20GB per project, 48h retention).
+// This is Gemini's limit, not ours — a larger file cannot be uploaded at all.
+const GEMINI_MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
+// What the picker accepts. Deliberately above the Gemini cap so an oversized file
+// gets a specific "compress it" message instead of a silent rejection at the picker.
+const VIDEO_ACCEPT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+// Chunk size for the resumable upload. Multiple of 256KB, per Google's protocol.
+const UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024;
+
 const sectionTitle: React.CSSProperties = {
   fontSize: "11px", fontWeight: 600, color: "var(--text-muted)",
   textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "10px",
@@ -42,6 +51,7 @@ export default function CopyAgentView() {
   const [videoFileName, setVideoFileName] = useState<string | null>(null);
   const [videoNote, setVideoNote] = useState("");
   const [analyzingMedia, setAnalyzingMedia] = useState(false);
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
@@ -92,40 +102,120 @@ export default function CopyAgentView() {
   }
 
   function processVideo(file: File) {
-    if (file.size > 1024 * 1024 * 1024) { setError("Video too large — max 1GB"); return; }
-    setError(null);
+    if (file.size > VIDEO_ACCEPT_MAX_BYTES) { setError("Video too large — max 5GB"); return; }
+    // Flag the Gemini ceiling at pick time so nobody waits through an upload to find out.
+    setError(
+      file.size > GEMINI_MAX_FILE_BYTES
+        ? `This file is ${(file.size / 1024 ** 3).toFixed(1)}GB. Gemini can only analyze videos up to 2GB — compress or trim it before generating.`
+        : null
+    );
     setVideoFile(file);
     setVideoFileName(file.name);
   }
 
   // NOTE: This uses the Gemini key in the BROWSER (NEXT_PUBLIC_). It is exposed
   // to anyone who inspects the page. Restrict + rotate the key in Google Cloud.
+  //
+  // Upload is resumable + chunked. The previous version sent the whole file as a
+  // single request body, which is all-or-nothing: one dropped connection three
+  // quarters of the way through a 2GB upload lost the entire transfer. Chunks are
+  // retried individually against an explicit byte offset, so only the failed
+  // chunk is resent.
+  async function uploadVideoToGemini(file: File, key: string, mimeType: string): Promise<{ fileUri: string; fileName: string }> {
+    // Open a resumable session. This request carries headers only — no bytes yet.
+    const startRes = await fetch(
+      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${key}`,
+      {
+        method: "POST",
+        headers: {
+          "X-Goog-Upload-Protocol": "resumable",
+          "X-Goog-Upload-Command": "start",
+          "X-Goog-Upload-Header-Content-Length": String(file.size),
+          "X-Goog-Upload-Header-Content-Type": mimeType,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ file: { display_name: file.name } }),
+      }
+    );
+    if (!startRes.ok) throw new Error(`Gemini upload could not start (HTTP ${startRes.status}).`);
+    const sessionUrl = startRes.headers.get("X-Goog-Upload-URL");
+    if (!sessionUrl) throw new Error("Gemini did not return an upload session URL.");
+
+    let offset = 0;
+    let finalData: { file?: { uri?: string; name?: string } } | null = null;
+
+    while (offset < file.size) {
+      const end = Math.min(offset + UPLOAD_CHUNK_BYTES, file.size);
+      const isLast = end === file.size;
+      const headers = {
+        "X-Goog-Upload-Offset": String(offset),
+        "X-Goog-Upload-Command": isLast ? "upload, finalize" : "upload",
+      };
+
+      // Retry this chunk only. The explicit offset makes the request idempotent,
+      // so a resend can't duplicate bytes.
+      let res: Response | null = null;
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          res = await fetch(sessionUrl, { method: "POST", headers, body: file.slice(offset, end) });
+          // 5xx / 408 / 429 are worth another go; other 4xx will not improve.
+          if (res.ok || (res.status < 500 && res.status !== 408 && res.status !== 429)) break;
+          lastErr = new Error(`HTTP ${res.status}`);
+        } catch (e) {
+          lastErr = e;
+          res = null;
+        }
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+      if (!res) throw new Error(`Upload stalled at ${Math.round(offset / 1024 / 1024)}MB — ${lastErr instanceof Error ? lastErr.message : "connection lost"}.`);
+      if (!res.ok) throw new Error(`Gemini rejected the upload at ${Math.round(offset / 1024 / 1024)}MB (HTTP ${res.status}).`);
+
+      offset = end;
+      setUploadPct(Math.round((offset / file.size) * 100));
+      if (isLast) finalData = await res.json();
+    }
+
+    const fileUri = finalData?.file?.uri;
+    const fileName = finalData?.file?.name;
+    if (!fileUri || !fileName) throw new Error("Gemini did not return a file URI.");
+    return { fileUri, fileName };
+  }
+
   async function analyzeVideoWithGemini(file: File): Promise<string> {
     const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY || "";
     if (!key) throw new Error("Missing NEXT_PUBLIC_GEMINI_API_KEY.");
+    if (file.size > GEMINI_MAX_FILE_BYTES) {
+      throw new Error(
+        `That file is ${(file.size / 1024 ** 3).toFixed(1)}GB. Gemini's Files API accepts 2GB per file, so it has to be compressed or trimmed first — exporting at 1080p instead of a master/ProRes file usually gets a video ad well under the limit.`
+      );
+    }
     const mimeType = file.type || "video/mp4";
 
-    // Stream the file straight to Gemini (no base64) so big files don't crash the tab.
-    const uploadRes = await fetch(
-      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${key}`,
-      { method: "POST", headers: { "X-Goog-Upload-Command": "start, upload, finalize", "X-Goog-Upload-Header-Content-Length": String(file.size), "X-Goog-Upload-Header-Content-Type": mimeType, "Content-Type": mimeType }, body: file }
-    );
-    if (!uploadRes.ok) throw new Error("Gemini upload failed.");
-    const uploadData = await uploadRes.json();
-    const fileUri = uploadData.file?.uri;
-    const fileName = uploadData.file?.name;
-    if (!fileUri || !fileName) throw new Error("Gemini did not return a file URI.");
+    setUploadPct(0);
+    let fileUri: string, fileName: string;
+    try {
+      ({ fileUri, fileName } = await uploadVideoToGemini(file, key, mimeType));
+    } finally {
+      setUploadPct(null);
+    }
 
-    // Poll until the file is ACTIVE (processed).
-    let active = false, attempts = 0;
-    while (!active && attempts < 45) {
+    // Gemini transcodes before the file is usable, and that scales with size, so
+    // a fixed 3-minute ceiling timed out large-but-valid uploads. Allow ~6 min
+    // per GB, floor 3 min, cap 20 min.
+    const maxWaitMs = Math.min(20 * 60_000, Math.max(3 * 60_000, (file.size / 1024 ** 3) * 6 * 60_000));
+    const deadline = Date.now() + maxWaitMs;
+    let active = false;
+    while (!active && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 4000));
       const statusRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${key}`);
+      if (!statusRes.ok) continue;
       const statusData = await statusRes.json();
       if (statusData.state === "ACTIVE") active = true;
-      attempts++;
+      // Bail immediately on a rejected file rather than waiting out the deadline.
+      else if (statusData.state === "FAILED") throw new Error("Gemini could not process that video — it may be corrupt or an unsupported codec.");
     }
-    if (!active) throw new Error("Video processing timed out. Try a shorter video.");
+    if (!active) throw new Error(`Video processing timed out after ${Math.round(maxWaitMs / 60_000)} minutes. Try a shorter or smaller video.`);
 
     const genRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
@@ -293,9 +383,20 @@ export default function CopyAgentView() {
                   <div style={{ display: "flex", alignItems: "center", gap: "10px", backgroundColor: "var(--nested)", border: "1px solid var(--border)", borderRadius: "8px", padding: "12px" }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{videoFileName}</div>
-                      <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>Ready for analysis</div>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                        {uploadPct !== null
+                          ? `Uploading to Gemini… ${uploadPct}%`
+                          : videoFile
+                            ? `${(videoFile.size / 1024 ** 3).toFixed(2)}GB · ${videoFile.size > GEMINI_MAX_FILE_BYTES ? "over Gemini's 2GB limit" : "Ready for analysis"}`
+                            : "Ready for analysis"}
+                      </div>
+                      {uploadPct !== null && (
+                        <div style={{ height: "3px", backgroundColor: "var(--raised)", borderRadius: "2px", marginTop: "6px", overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${uploadPct}%`, backgroundColor: "var(--text-secondary)", transition: "width 0.2s" }} />
+                        </div>
+                      )}
                     </div>
-                    <button onClick={() => { setVideoFile(null); setVideoFileName(null); }} style={{ width: "24px", height: "24px", borderRadius: "50%", backgroundColor: "var(--raised)", border: "1px solid var(--border)", color: "var(--text-secondary)", cursor: "pointer", fontSize: "12px" }}>✕</button>
+                    <button onClick={() => { setVideoFile(null); setVideoFileName(null); setError(null); }} style={{ width: "24px", height: "24px", borderRadius: "50%", backgroundColor: "var(--raised)", border: "1px solid var(--border)", color: "var(--text-secondary)", cursor: "pointer", fontSize: "12px" }}>✕</button>
                   </div>
                 ) : (
                   <label
@@ -305,7 +406,7 @@ export default function CopyAgentView() {
                     style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: `2px dashed ${dragging ? "var(--text-muted)" : "var(--border)"}`, borderRadius: "8px", padding: "32px", cursor: "pointer", backgroundColor: dragging ? "var(--hover)" : "transparent" }}
                   >
                     <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-secondary)" }}>Drop video or click to upload</span>
-                    <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>MP4, MOV, AVI · Max 1GB</span>
+                    <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>MP4, MOV, AVI · Max 5GB</span>
                     <input type="file" accept="video/*" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) processVideo(f); }} />
                   </label>
                 )}
