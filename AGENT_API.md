@@ -7,6 +7,43 @@ Meta on its own.
 Everything else in the app authenticates a **Supabase browser session**. A bot
 has no session, so this is a separate entrance with a separate secret.
 
+## Quick start
+
+**Base URL:** `https://revise-creative-dashboard.vercel.app`
+
+Every request carries the same header. One key, read and write:
+
+```
+Authorization: Bearer <AGENT_API_KEY>
+```
+
+Three calls, that's the whole API:
+
+| what | call |
+|---|---|
+| read the queue | `GET /api/agent/ads?stage=Testing` |
+| record the Meta ad id you launched | `POST /api/agent/ads/{id}/meta-ad-id` |
+| rank it Winner / Killed | `POST /api/agent/ads/{id}/result` |
+
+`{id}` is always the `id` UUID from the GET response — **not** the DTC number.
+
+### Check your write access in 10 seconds
+
+This clears a verdict that is already empty, so it changes nothing. A
+`{"ok": true}` back means the key can write:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $AGENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"result":null}' \
+  "https://revise-creative-dashboard.vercel.app/api/agent/ads/677e870c-b0cb-453a-81b9-8ebe0087a394/result"
+```
+
+If that returns `401`, the key is wrong. If it returns a plain HTML 404 page
+rather than `{"error":"No ad with that id."}`, you're pointed at the wrong
+host. Anything else, jump to Errors at the bottom.
+
 ## What it can and can't do
 
 | | |
@@ -26,6 +63,9 @@ column to `ads` does **not** automatically expose it — it has to be added to
 `FIELDS` in `app/api/agent/ads/route.ts` first.
 
 ## Setup
+
+*Operator side — whoever runs the dashboard does this once. If you're
+consuming the API, skip to the endpoints below; you just need the key.*
 
 Generate a key:
 
@@ -54,7 +94,7 @@ without it, it just can't tell agent-set verdicts from human ones.
 
 ```bash
 curl -H "Authorization: Bearer $AGENT_API_KEY" \
-  "https://<your-domain>/api/agent/ads?stage=Ready%20to%20Launch"
+  "https://revise-creative-dashboard.vercel.app/api/agent/ads?stage=Ready%20to%20Launch"
 ```
 
 `X-API-Key: <key>` works too, if that's easier to configure on the OpenClaw side.
@@ -109,22 +149,32 @@ higher `limit` or a tighter `since`.
 
 ### Fields that are empty in practice
 
-Measured across all 99 ads on 2026-08-17. Some fields exist in the schema but
+Measured across all 126 ads on 2026-08-24. Some fields exist in the schema but
 nobody fills them in, so don't design around them:
 
 | field | filled | |
 |---|---|---|
-| `selected_headline` | **0/99** | never used — write your own copy |
-| `selected_ad_copy` | **0/99** | same |
-| `script_hook` | **0/99** | same |
-| `assigned_media_buyer` | **0/99** | can't route by media buyer yet |
-| `frame_io_link` | 68/99 — **12 of the 19** in Ready to Launch | see below |
-| `destination_url_primary` | 93/99 — **19/19** in Ready to Launch | safe to depend on |
-| `brief_link` | 98/99 | safe to depend on |
+| `selected_headline` | **0/126** | never used — write your own copy |
+| `selected_ad_copy` | **0/126** | same |
+| `script_hook` | **0/126** | same |
+| `assigned_media_buyer` | **0/126** | can't route by media buyer yet |
+| `result` | **0/126** | nothing has ever ranked an ad — see the result endpoint |
+| `meta_ad_id` | **0/126** | never written back yet — see the meta-ad-id endpoint |
+| `frame_io_link` | 97/126 — **23 of the 24** in Ready to Launch | see below |
+| `destination_url_primary` | 120/126 — **24/24** in Ready to Launch | safe to depend on |
+| `brief_link` | 125/126 | safe to depend on |
 
-**The Frame.io gap is the one that will bite.** Roughly a third of the ads in
-Ready to Launch have no creative link at all. A launcher needs to skip those
-and say so, not fail silently or launch something empty.
+Current pipeline: 74 Testing, 24 Ready to Launch, 12 Brief, 8 Review,
+8 In Production.
+
+**Still check `frame_io_link` before launching.** It's much better than it was
+(12 of 19 on 2026-08-17, 23 of 24 now), but an ad with no creative link is
+something to skip and report, not fail silently on.
+
+**These ratios go stale fast** — the pipeline turned over from 99 ads to 126 in
+a week, and Ready to Launch has read anywhere from 8 to 27 on a given day.
+Re-measure with `GET /api/agent/ads?stage=*&limit=500` rather than trusting
+this table.
 
 ### The creative file is not here
 
@@ -156,7 +206,7 @@ curl -X POST \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"meta_ad_id":"120210000000000000"}' \
-  "https://<your-domain>/api/agent/ads/8f2c…/meta-ad-id"
+  "https://revise-creative-dashboard.vercel.app/api/agent/ads/8f2c…/meta-ad-id"
 ```
 
 `id` is the `id` field from the GET response (a UUID), not the DTC number.
@@ -179,7 +229,7 @@ curl -X POST \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"result":"Winner","learning":"Hook B held to 3s at 2.1x ROAS over 9 days.","close":true}' \
-  "https://<your-domain>/api/agent/ads/8f2c…/result"
+  "https://revise-creative-dashboard.vercel.app/api/agent/ads/8f2c…/result"
 ```
 
 ### Body
@@ -253,11 +303,11 @@ warning.
 
 ### Why this matters more than it looks
 
-Before this endpoint, **0 of 99 ads carried a result**. That's why the
-Learnings view is empty and why the Win rate column was pulled out of
-Analytics — not bugs, just a field nobody filled. Ranking ads through here
-brings all of that back to life, which is the "accurate tracking" half of the
-loop.
+Before this endpoint, **no ad had ever carried a result** — still 0 of 126
+as of 2026-08-24. That's why the Learnings view is empty and why the Win rate
+column was pulled out of Analytics — not bugs, just a field nobody filled.
+Ranking ads through here brings all of that back to life, which is the
+"accurate tracking" half of the loop.
 
 ## Errors
 
