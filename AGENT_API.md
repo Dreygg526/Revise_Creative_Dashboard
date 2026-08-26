@@ -17,13 +17,14 @@ Every request carries the same header. One key, read and write:
 Authorization: Bearer <AGENT_API_KEY>
 ```
 
-Three calls, that's the whole API:
+Four calls, that's the whole API:
 
 | what | call |
 |---|---|
 | read the queue | `GET /api/agent/ads?stage=Testing` |
 | record the Meta ad id you launched | `POST /api/agent/ads/{id}/meta-ad-id` |
-| rank it Winner / Killed | `POST /api/agent/ads/{id}/result` |
+| move it forward a stage | `POST /api/agent/ads/{id}/stage` |
+| rank it Winner / Killed, with its numbers | `POST /api/agent/ads/{id}/result` |
 
 `{id}` is always the `id` UUID from the GET response — **not** the DTC number.
 
@@ -51,9 +52,11 @@ host. Anything else, jump to Errors at the bottom.
 | Read ads by pipeline stage | yes |
 | Write back a Meta ad id | yes |
 | Rank an ad Winner / Killed, with a learning | yes |
-| Close an ad out (stage → `Winner / Killed`) | yes — that stage only, never any other |
-| Move an ad anywhere else in the pipeline | **no** |
-| Change spend, assignments, briefs, titles | **no** |
+| Write spend / purchases / CVR | yes — the close-out numbers, same three the modal asks for |
+| Close an ad out (stage → `Winner / Killed`) | yes |
+| Move an ad **forward** through the pipeline | yes — gates enforced, same as a person |
+| Move an ad **backward** through the pipeline | **no** — a person has to do that in the dashboard |
+| Change assignments, briefs, titles, due dates | **no** |
 | Delete anything | **no** |
 | Read team members, settings, logins | **no** |
 | Launch anything on Meta | **no** — the dashboard has no write access to Meta at all |
@@ -125,6 +128,10 @@ curl -H "Authorization: Bearer $AGENT_API_KEY" \
       "product": "…",
       "stage": "Ready to Launch",
       "result": null,
+      "spend": null,
+      "purchases": null,
+      "cvr": null,
+      "learning": null,
       "format": "Video Ad",
       "selected_headline": "…",
       "selected_ad_copy": "…",
@@ -147,32 +154,42 @@ curl -H "Authorization: Bearer $AGENT_API_KEY" \
 `truncated: true` means there were at least `limit` matches — page with a
 higher `limit` or a tighter `since`.
 
+**You can read back everything you can write.** `result`, `spend`,
+`purchases`, `cvr` and `learning` all come back here so a poller can tell what
+it already recorded and skip it — without that, every run re-writes the same
+verdict. What is *not* here is the Meta sync's own roll-up (`meta_spend`,
+`meta_revenue`, `meta_breakdown` and friends): the key can't write those, and
+you have the raw Meta numbers on your side already. CPA isn't a column
+anywhere — it's `spend / purchases`, computed wherever it's shown.
+
 ### Fields that are empty in practice
 
-Measured across all 126 ads on 2026-08-24. Some fields exist in the schema but
+Measured across all 150 ads on 2026-08-26. Some fields exist in the schema but
 nobody fills them in, so don't design around them:
 
 | field | filled | |
 |---|---|---|
-| `selected_headline` | **0/126** | never used — write your own copy |
-| `selected_ad_copy` | **0/126** | same |
-| `script_hook` | **0/126** | same |
-| `assigned_media_buyer` | **0/126** | can't route by media buyer yet |
-| `result` | **0/126** | nothing has ever ranked an ad — see the result endpoint |
-| `meta_ad_id` | **0/126** | never written back yet — see the meta-ad-id endpoint |
-| `frame_io_link` | 97/126 — **23 of the 24** in Ready to Launch | see below |
-| `destination_url_primary` | 120/126 — **24/24** in Ready to Launch | safe to depend on |
-| `brief_link` | 125/126 | safe to depend on |
+| `selected_headline` | **0/150** | never used — write your own copy |
+| `selected_ad_copy` | **0/150** | same |
+| `script_hook` | **0/150** | same |
+| `assigned_media_buyer` | **0/150** | can't route by media buyer yet |
+| `result` | **0/150** | nothing has ever ranked an ad — see the result endpoint |
+| `spend` / `purchases` / `cvr` | **0/150** | nobody closes ads out by hand either |
+| `learning` | **0/150** | same — which is why the Learnings view is empty |
+| `meta_ad_id` | **0/150** | never written back yet — see the meta-ad-id endpoint |
+| `frame_io_link` | 117/150 — **45 of the 52** in Ready to Launch | see below |
+| `destination_url_primary` | 144/150 — **52/52** in Ready to Launch | safe to depend on |
+| `brief_link` | 149/150 | safe to depend on |
 
-Current pipeline: 74 Testing, 24 Ready to Launch, 12 Brief, 8 Review,
-8 In Production.
+Current pipeline: 74 Testing, 52 Ready to Launch, 12 Brief, 10 In Production,
+2 Review.
 
-**Still check `frame_io_link` before launching.** It's much better than it was
-(12 of 19 on 2026-08-17, 23 of 24 now), but an ad with no creative link is
-something to skip and report, not fail silently on.
+**Still check `frame_io_link` before launching** — 7 of the 52 ads in Ready to
+Launch have no creative link. That's something to skip and report, not fail
+silently on.
 
-**These ratios go stale fast** — the pipeline turned over from 99 ads to 126 in
-a week, and Ready to Launch has read anywhere from 8 to 27 on a given day.
+**These ratios go stale fast** — the pipeline went 99 → 126 → 150 ads in ten
+days, and Ready to Launch has read anywhere from 8 to 52 on a given day.
 Re-measure with `GET /api/agent/ads?stage=*&limit=500` rather than trusting
 this table.
 
@@ -222,13 +239,17 @@ for ads whose names don't carry a DTC number at all.
 
 ## `POST /api/agent/ads/{id}/result`
 
-Rank an ad **Winner** or **Killed** once you've seen how it performed.
+Rank an ad **Winner** or **Killed** once you've seen how it performed, and
+record the numbers behind that call.
+
+This is the machine equivalent of the dashboard's close-out form, and takes
+the same five fields it does: outcome, spend, purchases, CVR, learning.
 
 ```bash
 curl -X POST \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"result":"Winner","learning":"Hook B held to 3s at 2.1x ROAS over 9 days.","close":true}' \
+  -d '{"result":"Winner","spend":412.55,"purchases":6,"cvr":1.8,"learning":"Hook B held to 3s at 2.1x ROAS over 9 days.","close":true}' \
   "https://revise-creative-dashboard.vercel.app/api/agent/ads/8f2c…/result"
 ```
 
@@ -236,9 +257,30 @@ curl -X POST \
 
 | field | required | notes |
 |---|---|---|
-| `result` | yes | `"Winner"` or `"Killed"`. `null` clears it. |
-| `learning` | no | Free text, max 2000 chars — one or two sentences on *why*. Omit the field to leave any existing learning alone; send `null` to clear it. |
-| `close` | no | `false` by default. `true` also moves the ad to the `Winner / Killed` stage. |
+| `result` | — | `"Winner"` or `"Killed"`. `null` clears it. |
+| `spend` | — | Ad spend, currency amount. `412.55` |
+| `purchases` | — | Whole number of purchases. `6` |
+| `cvr` | — | **A percentage, not a fraction.** `1.8` means 1.8%. Values above 100 are rejected. |
+| `learning` | — | Free text, max 2000 chars — one or two sentences on *why*. |
+| `close` | — | `false` by default. `true` also moves the ad to the `Winner / Killed` stage. |
+
+**Nothing is individually required — but send at least one of `result`,
+`spend`, `purchases`, `cvr`, `learning`.** Any field you omit is left exactly
+as it was, so you can post numbers now and a verdict later, or update spend
+mid-test without touching the verdict. Sending `null` clears that one field.
+
+**Don't send `cpa`.** It isn't stored anywhere in this app — it's computed as
+`spend / purchases` wherever it's displayed, so posting it is a 400. The
+response echoes the computed value back to you.
+
+**Unknown fields are rejected, not ignored.** `{"roas": 2.1}` gets a 400
+naming the field. Better than a `200` that wrote nothing.
+
+**These write the manual close-out columns, not the Meta sync's.** The
+dashboard prefers its own synced `meta_spend` / `meta_purchases` / `meta_cvr`
+where it has them, and falls back to what you send here — the same precedence
+a human close-out gets. Your numbers are never overwritten by a sync, they're
+just outranked on screen where Meta has its own figure for that ad.
 
 **The word is `Killed`, not `Loser`** — that exact spelling is what the
 Learnings view, Reports and the pipeline badge match on. You can send
@@ -258,12 +300,15 @@ write a value no screen can see.
   this while a test is still running and you're calling it early, or if you
   want a person to do the final close-out.
 - **`close: true`** — also moves the ad to `Winner / Killed`, the last stage.
-  This is the only stage value this API can ever write; there is no way to
-  push an ad to `Brief`, `Testing` or anywhere else through it.
+  This is the only stage value *this* endpoint can write; ordinary pipeline
+  moves go through `POST .../stage` below.
 
-Closing without a `learning` works but comes back with a warning: the
-Learnings view only lists closed ads that have one, so the ad won't show up
-there.
+`close: true` needs a verdict, either in the same request or already on the
+ad. It does **not** need the numbers — but closing without `spend`,
+`purchases` or `cvr` comes back with a warning naming what's missing, because
+that's a state a person couldn't have produced (the dashboard's close-out
+form demands all three). Same for a missing `learning`: the Learnings view
+only lists closed ads that have one, so the ad won't show up there.
 
 ### Response
 
@@ -276,25 +321,34 @@ there.
     "ad_name": "Gut reset — hook B",
     "stage": "Winner / Killed",
     "result": "Winner",
+    "spend": 412.55,
+    "purchases": 6,
+    "cvr": 1.8,
+    "cpa": 68.76,
     "learning": "Hook B held to 3s at 2.1x ROAS over 9 days."
   },
+  "written": ["result", "spend", "purchases", "cvr", "learning"],
   "normalized": null,
   "stage_changed": { "from": "Testing", "to": "Winner / Killed" },
   "previous_result": null,
-  "attribution_recorded": true,
-  "warnings": []
+  "attribution_recorded": true
 }
 ```
 
+`written` lists the fields this request actually set, so you can confirm the
+body parsed the way you meant. `cpa` is computed, never stored.
 `stage_changed` is `null` when the stage didn't move. `previous_result` lets
 you see whether you're overwriting a verdict — including one a person set, so
-re-posting is safe to make idempotent on your side.
+re-posting is safe to make idempotent on your side. `warnings` is present only
+when there's something to say.
 
 ### Every write is stamped
 
 Agent-set verdicts are recorded as `result_source = 'agent'` with a
 `result_set_at` timestamp; verdicts a person sets in the dashboard leave those
-null. If a ranking run turns out to be wrong, its writes can be found and
+null. The stamp tracks the **verdict**, so a metrics-only call comes back
+`attribution_recorded: false` — it didn't touch the verdict, and re-dating
+someone else's close-out because you updated spend would be wrong. If a ranking run turns out to be wrong, its writes can be found and
 reverted as a group without touching anyone's manual close-outs.
 
 That needs `agent_result_schema.sql` to have been run. If it hasn't, the write
@@ -303,19 +357,126 @@ warning.
 
 ### Why this matters more than it looks
 
-Before this endpoint, **no ad had ever carried a result** — still 0 of 126
-as of 2026-08-24. That's why the Learnings view is empty and why the Win rate
+Before this endpoint, **no ad had ever carried a result** — still 0 of 150
+as of 2026-08-26, and the same is true of spend, purchases, CVR and learning. That's why the Learnings view is empty and why the Win rate
 column was pulled out of Analytics — not bugs, just a field nobody filled.
 Ranking ads through here brings all of that back to life, which is the
 "accurate tracking" half of the loop.
+
+## `POST /api/agent/ads/{id}/stage`
+
+Move an ad forward through the pipeline — the call to make once you've
+actually launched something, so it doesn't sit in Ready to Launch waiting for
+a person to tick a box for work you already did.
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $AGENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"stage":"Testing"}' \
+  "https://revise-creative-dashboard.vercel.app/api/agent/ads/8f2c…/stage"
+```
+
+### Body
+
+| field | required | notes |
+|---|---|---|
+| `stage` | yes | One of the seven stages below. Case-insensitive, and the separator in `Winner / Killed` doesn't matter. |
+
+The pipeline, in order:
+
+```
+Idea → Brief → In Production → Review → Ready to Launch → Testing → Winner / Killed
+```
+
+Anything outside that list is a **400** with the valid stages in the response —
+stages are a fixed vocabulary, and a near-miss like `"testing "` or `"Live"`
+would create a board column no filter can reach.
+
+### Forward only
+
+**A move to an earlier stage is a 403.** This is the one real bound left on
+the key: an agent that can rewind can quietly undo the team's work and leave
+the board lying about where things stand. If something needs to go backwards,
+a person does it in the ad detail modal.
+
+Posting the stage an ad is already in is **not** an error — it comes back
+`{"ok": true, "moved": false}`, so a retrying poller is safe.
+
+Skipping stages is allowed (`Brief` → `Testing`), but every gate in between is
+checked and `skipped_stages` in the response names what you jumped.
+
+### Gates apply, exactly as they do for a person
+
+Each forward step has prerequisites. If they aren't met you get a **409**
+naming the missing fields:
+
+```json
+{
+  "error": "Can't move \"Ready to Launch\" -> \"Testing\": Destination URL missing.",
+  "from": "Ready to Launch",
+  "to": "Testing",
+  "missing": ["Destination URL"]
+}
+```
+
+| leaving | needs |
+|---|---|
+| `Idea` | Persona, Core Emotion, Problem, Awareness |
+| `Brief` | Brief link + Editor — *skipped entirely if the strategist is also the editor (a self-produced ad)* |
+| `In Production` | nothing |
+| `Review` | nothing |
+| `Ready to Launch` | at least one destination URL |
+| `Testing` | Result, Spend, Purchases, CVR, Learning — **all five**, which is why `POST .../result` exists |
+
+A 409 is a real answer, not a failure — it's telling you the ad isn't ready.
+Read `missing`, report it, move on to the next ad. `Ready to Launch` →
+`Testing` is the one you'll live on, and its only requirement is the
+destination URL, which all 52 ads in that stage currently have.
+
+**To close an ad out, use `POST .../result` with `close: true`, not this
+endpoint.** Reaching `Winner / Killed` through here means satisfying the full
+five-field gate first — so you'd have to call `.../result` anyway. This
+endpoint won't refuse it, but it'll warn you.
+
+### Response
+
+```json
+{
+  "ok": true,
+  "ad": { "id": "8f2c…", "dtc_number": 142, "ad_name": "Gut reset — hook B", "stage": "Testing" },
+  "moved": true,
+  "stage_changed": { "from": "Ready to Launch", "to": "Testing" },
+  "skipped_stages": []
+}
+```
+
+### The full launch loop
+
+The four calls in the order OpenClaw actually makes them:
+
+1. `GET /api/agent/ads?stage=Ready%20to%20Launch` — what's waiting. Skip any
+   ad with no `frame_io_link` and report it.
+2. Launch it on Meta yourself.
+3. `POST /api/agent/ads/{id}/meta-ad-id` — hand back the id Meta returned.
+   This turns attribution for that ad from name-parsing guesswork into fact.
+4. `POST /api/agent/ads/{id}/stage` with `{"stage":"Testing"}` — the ad is now
+   live, so the board should say so.
+
+Then, days later, when the test has run:
+
+5. `POST /api/agent/ads/{id}/result` with the verdict, `spend`, `purchases`,
+   `cvr`, a `learning`, and `close: true`.
 
 ## Errors
 
 | status | meaning |
 |---|---|
-| 400 | Bad parameter — the message says which |
+| 400 | Bad parameter or unrecognized field — the message says which |
 | 401 | Missing or wrong key |
+| 403 | Refused by policy — currently only a backward stage move |
 | 404 | No ad with that id |
+| 409 | The ad isn't in a state that allows this — a gate is unmet. `missing` says what's needed |
 | 500 | Server misconfigured or database error |
 
 401 reads the same whether the key is wrong or the server has none configured,
@@ -329,8 +490,11 @@ so a prober can't learn whether the integration is switched on.
   Discord messages, so a crafted message could try to make it call this API in
   ways nobody intended. That's why the writes are shaped the way they are: the
   worst a hijacked agent can do is read the pipeline, write a wrong Meta ad id,
-  and mislabel outcomes — all of it reversible from the dashboard, and the
-  mislabelling is stamped `result_source = 'agent'` so it can be found. It
-  still cannot move work through the pipeline, edit a brief, or delete.
+  mislabel outcomes, mis-state performance numbers, and push ads *forward* into
+  stages they aren't ready for — all of it reversible from the dashboard, and
+  the mislabelling is stamped `result_source = 'agent'` so it can be found. It
+  still cannot pull work backwards, edit a brief, reassign anyone, or delete.
+  Gate enforcement on the stage endpoint means it can't advance an ad past a
+  requirement a person would have had to satisfy either.
 - **The key is a full read of the pipeline.** Treat it like a password. If it
   leaks, rotate it — see Setup.

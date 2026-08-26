@@ -40,10 +40,17 @@ const FIELDS = [
   "ad_name",
   "product",
   "stage",
-  // The verdict only — not spend/purchases/cvr/learning. It's here because
-  // the agent writes it via POST .../result and needs to read back what it
-  // set (and what a human set) to stay idempotent.
+  // The close-out block. Every one of these is writable via POST .../result,
+  // and the agent has to read back what it set (and what a human set) to stay
+  // idempotent — a poller that can't see the verdict it wrote last run will
+  // write it again every run. The rule is "readable exactly where writable":
+  // nothing here that the key can't also set. The meta_* roll-ups stay out,
+  // because the key can't write those and has the raw Meta data itself.
   "result",
+  "spend",
+  "purchases",
+  "cvr",
+  "learning",
   "priority",
   "format",
   "ad_type",
