@@ -3,9 +3,12 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import { useSettings } from "@/app/hooks/useSettings";
+import EditorSelect from "@/app/components/modals/EditorSelect";
+import type { Ad } from "@/app/types";
 
 interface NewAdModalProps {
   defaultDtc: number; // pre-filled next DTC number
+  ads: Ad[]; // for the editor dropdown's task counts
   onClose: () => void;
   onCreate: (fields: {
     dtc_number: number | null;
@@ -28,7 +31,7 @@ const labelStyle: React.CSSProperties = {
   display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px",
 };
 
-export default function NewAdModal({ defaultDtc, onClose, onCreate }: NewAdModalProps) {
+export default function NewAdModal({ defaultDtc, ads, onClose, onCreate }: NewAdModalProps) {
   const { valuesFor, strategistOptions, editorOptions } = useSettings();
 
   const [dtcNumber, setDtcNumber] = useState(String(defaultDtc));
@@ -99,10 +102,7 @@ export default function NewAdModal({ defaultDtc, onClose, onCreate }: NewAdModal
             </div>
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>Editor</label>
-              <select style={inputStyle} value={editor} onChange={(e) => setEditor(e.target.value)}>
-                <option value="">—</option>
-                {editors.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
-              </select>
+              <EditorSelect style={inputStyle} value={editor} onChange={setEditor} editors={editors} ads={ads} />
             </div>
           </div>
 

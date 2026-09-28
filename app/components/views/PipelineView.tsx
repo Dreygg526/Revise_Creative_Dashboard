@@ -494,6 +494,7 @@ export default function PipelineView() {
             {showNewAd && (
         <NewAdModal
           defaultDtc={nextDtcNumber()}
+          ads={ads}
           onClose={() => setShowNewAd(false)}
           onCreate={async (fields) => { await createAd(fields); }}
         />
@@ -502,6 +503,7 @@ export default function PipelineView() {
       {liveOpenAd && !selectMode && (
         <AdDetailModal
           ad={liveOpenAd}
+          ads={ads}
           onClose={() => setOpenAd(null)}
           onSave={async (id, fields) => { await updateAd(id, fields); }}
           onDelete={async (id) => { await deleteAd(id); }}

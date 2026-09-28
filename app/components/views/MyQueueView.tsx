@@ -143,6 +143,7 @@ export default function MyQueueView() {
       {liveOpenAd && (
         <AdDetailModal
           ad={liveOpenAd}
+          ads={ads}
           onClose={() => setOpenAd(null)}
           onSave={async (id, fields) => { await updateAd(id, fields); }}
           onDelete={async (id) => { await deleteAd(id); setOpenAd(null); }}

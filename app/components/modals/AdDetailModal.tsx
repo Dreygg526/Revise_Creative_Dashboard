@@ -8,11 +8,14 @@ import { useMyName } from "@/app/hooks/useMyName";
 import { can } from "@/app/lib/permissions";
 import CloseOutModal from "@/app/components/modals/CloseOutModal";
 import PreLaunchModal from "@/app/components/modals/PreLaunchModal";
+import EditorSelect from "@/app/components/modals/EditorSelect";
 import { STAGE_ORDER, checkMove, stageIndex, isSelfProduced } from "@/app/lib/gates";
 import type { Ad, MetaBreakdownRow } from "@/app/types";
 
 interface AdDetailModalProps {
   ad: Ad;
+  // Every ad, so the editor dropdown can show who is already full.
+  ads: Ad[];
   onClose: () => void;
   onSave: (id: string, fields: Partial<Ad>) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -48,7 +51,7 @@ const sectionTitle: React.CSSProperties = {
   marginTop: "4px",
 };
 
-export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetailModalProps) {
+export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete }: AdDetailModalProps) {
   const { valuesFor, strategistOptions, editorOptions } = useSettings();
   const myRole = useMyRole();
   const myName = useMyName();
@@ -683,10 +686,7 @@ export default function AdDetailModal({ ad, onClose, onSave, onDelete }: AdDetai
                 {draft.assigned_editor} · self-produced
               </div>
             ) : (
-              <select style={inputStyle} value={draft.assigned_editor ?? ""} onChange={(e) => set("assigned_editor", e.target.value || null)}>
-                <option value="">—</option>
-                {editors.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
-              </select>
+              <EditorSelect style={inputStyle} value={draft.assigned_editor ?? ""} onChange={(v) => set("assigned_editor", v || null)} editors={editors} ads={ads} />
             )}
           </div>
 

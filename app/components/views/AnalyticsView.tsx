@@ -571,6 +571,7 @@ export default function AnalyticsView() {
       {openAd && (
         <AdDetailModal
           ad={openAd}
+          ads={ads}
           onClose={() => setOpenAd(null)}
           onSave={async (id, fields) => { await updateAd(id, fields); }}
           onDelete={async (id) => { await deleteAd(id); setOpenAd(null); }}

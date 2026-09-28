@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useAds } from "@/app/hooks/useAds";
 import { useSettings } from "@/app/hooks/useSettings";
 import { roleBadgeStyle } from "@/app/lib/roleStyles";
+import { loadColor, RED_AT } from "@/app/lib/editorLoad";
 import type { Ad, TeamMember } from "@/app/types";
 
 const CLOSED_STAGE = "Winner / Killed";
@@ -11,14 +12,6 @@ const CLOSED_STAGE = "Winner / Killed";
 // Capacity model: how many active ads counts as a "full plate".
 // Bar fills toward this; color shifts as load rises.
 const FULL_CAPACITY = 5;        // amber zone starts above this-ish
-const AMBER_AT = 4;             // 4-5 active = getting full
-const RED_AT = 6;               // 6+ active = overloaded
-
-function loadColor(n: number): string {
-  if (n >= RED_AT) return "#ef4444";        // red — overloaded
-  if (n >= AMBER_AT) return "#eab308";       // amber — getting full
-  return "#22c55e";                          // green — healthy
-}
 
 // Which ad field holds the assignment for a given role.
 function fieldForRole(role: string): keyof Ad | null {
