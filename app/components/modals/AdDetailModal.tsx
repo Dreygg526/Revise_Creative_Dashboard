@@ -368,6 +368,10 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete, isNe
   const angles = valuesFor("angle");
   const adTypes = valuesFor("ad_type");
   const products = valuesFor("product");
+  // Picked from Settings lists rather than typed — free text produced 76
+  // spellings of ~8 pages, and these feed the ad-set name (Axel's ask).
+  const wlPageOptions = valuesFor("whitelisting_page");
+  const destUrlOptions = valuesFor("destination_url");
   const editors = editorOptions;
   const strategists = strategistOptions;
 
@@ -810,12 +814,7 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete, isNe
           <label style={labelStyle}>Destination URLs</label>
           {(draft.destination_urls ?? []).map((url, i) => (
             <div key={i} style={{ display: "flex", gap: "6px", marginBottom: "6px" }}>
-              <input
-                style={inputStyle}
-                value={url}
-                onChange={(e) => updateListItem("destination_urls", i, e.target.value)}
-                placeholder="https://"
-              />
+              <ListSelect value={url} options={destUrlOptions} onChange={(v) => updateListItem("destination_urls", i, v)} />
               <button
                 onClick={() => removeListItem("destination_urls", i)}
                 style={{ padding: "0 10px", backgroundColor: "transparent", border: "1px solid var(--border)", borderRadius: "6px", color: "var(--text-muted)", cursor: "pointer", display: "flex", alignItems: "center" }}
@@ -837,12 +836,7 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete, isNe
           <label style={labelStyle}>Whitelisting pages</label>
           {(draft.whitelisting_pages ?? []).map((url, i) => (
             <div key={i} style={{ display: "flex", gap: "6px", marginBottom: "6px" }}>
-              <input
-                style={inputStyle}
-                value={url}
-                onChange={(e) => updateListItem("whitelisting_pages", i, e.target.value)}
-                placeholder="Page / handle"
-              />
+              <ListSelect value={url} options={wlPageOptions} onChange={(v) => updateListItem("whitelisting_pages", i, v)} />
               <button
                 onClick={() => removeListItem("whitelisting_pages", i)}
                 style={{ padding: "0 10px", backgroundColor: "transparent", border: "1px solid var(--border)", borderRadius: "6px", color: "var(--text-muted)", cursor: "pointer", display: "flex", alignItems: "center" }}
@@ -1262,5 +1256,19 @@ function MetaStat({ label, value }: { label: string; value: string }) {
       </div>
       <div style={{ fontSize: "15px", color: "var(--text)", fontWeight: 600 }}>{value}</div>
     </div>
+  );
+}
+
+// Dropdown for one whitelisting page / destination URL entry. A value that
+// isn't in the Settings list (older free-text entries) stays selectable and
+// is flagged, so opening an old ad never blanks what was stored.
+function ListSelect({ value, options, onChange }: { value: string; options: string[]; onChange: (v: string) => void }) {
+  const offList = value !== "" && !options.includes(value);
+  return (
+    <select style={inputStyle} value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">— Select —</option>
+      {offList && <option value={value}>{value} (not in list)</option>}
+      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+    </select>
   );
 }

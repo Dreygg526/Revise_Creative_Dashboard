@@ -115,7 +115,9 @@ export type SettingsListType =
   | 'content_source'
   | 'product'
   | 'priority'
-  | 'role';
+  | 'role'
+  | 'whitelisting_page'
+  | 'destination_url';
 
 export interface SettingsList {
   id: string;

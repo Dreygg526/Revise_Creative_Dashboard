@@ -16,6 +16,8 @@ const LIST_TYPES: { key: string; label: string }[] = [
   { key: "core_emotion", label: "Core emotions" },
   { key: "problem", label: "Problems" },
   { key: "awareness", label: "Awareness" },
+  { key: "whitelisting_page", label: "Whitelisting pages" },
+  { key: "destination_url", label: "Destination URLs" },
 ];
 
 const inputStyle: React.CSSProperties = {
