@@ -19,6 +19,10 @@ interface AdDetailModalProps {
   onClose: () => void;
   onSave: (id: string, fields: Partial<Ad>) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  // Set when this ad was just created by "New ad". Its DTC # becomes editable
+  // and, if it is closed without anything filled in, onDiscard removes it.
+  isNew?: boolean;
+  onDiscard?: (id: string) => Promise<void>;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -51,7 +55,7 @@ const sectionTitle: React.CSSProperties = {
   marginTop: "4px",
 };
 
-export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete }: AdDetailModalProps) {
+export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete, isNew = false, onDiscard }: AdDetailModalProps) {
   const { valuesFor, strategistOptions, editorOptions } = useSettings();
   const myRole = useMyRole();
   const myName = useMyName();
@@ -177,6 +181,26 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete }: Ad
       learning: d.learning,
       meta_ad_id: d.meta_ad_id,
     });
+  }
+
+  // Every way out of the modal goes through here. A pending autosave is
+  // flushed first — otherwise typing a name and closing inside the 800ms
+  // debounce silently dropped the edit. A brand-new ad nobody touched is
+  // discarded rather than left as an empty card. That bypasses delete_ad on
+  // purpose: it only ever undoes the caller's own click on "New ad".
+  const initialAd = useRef(ad);
+  const [closing, setClosing] = useState(false);
+  async function close() {
+    if (closing) return;
+    setClosing(true);
+    const untouched = JSON.stringify(draft) === JSON.stringify(initialAd.current);
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      if (JSON.stringify(draft) !== JSON.stringify(ad)) await persist(draft);
+    }
+    if (isNew && untouched && onDiscard) await onDiscard(ad.id);
+    onClose();
   }
 
   // Manual "Save changes" button — saves now and shows saved status.
@@ -398,7 +422,7 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete }: Ad
 
   return (
     <div
-      onClick={onClose}
+      onClick={close}
       style={{
         position: "fixed",
         inset: 0,
@@ -434,11 +458,30 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete }: Ad
         >
           <div>
             <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "2px", display: "flex", alignItems: "center", gap: "8px" }}>
-              <span>
-                {draft.dtc_number != null ? `DTC #${draft.dtc_number}` : "No DTC #"}
-                {"  ·  "}
-                {draft.stage}
-              </span>
+              {isNew && allowTitle ? (
+                // Only a fresh ad gets an editable DTC # — on an existing one
+                // the number is what Meta spend is matched on.
+                <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                  DTC #
+                  <input
+                    value={draft.dtc_number ?? ""}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, "");
+                      set("dtc_number", digits ? Number(digits) : null);
+                    }}
+                    inputMode="numeric"
+                    style={{ width: "56px", padding: "1px 6px", fontSize: "11px", backgroundColor: "var(--nested)", border: "1px solid var(--border)", borderRadius: "4px", color: "var(--text)", fontFamily: "inherit", outline: "none" }}
+                  />
+                  {"  ·  "}
+                  {draft.stage}
+                </span>
+              ) : (
+                <span>
+                  {draft.dtc_number != null ? `DTC #${draft.dtc_number}` : "No DTC #"}
+                  {"  ·  "}
+                  {draft.stage}
+                </span>
+              )}
               {saveStatus === "saving" && <span style={{ color: "var(--text-secondary)" }}>· Saving…</span>}
               {saveStatus === "saved" && <span style={{ color: "#4ade80" }}>· All changes saved</span>}
             </div>
@@ -447,7 +490,8 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete }: Ad
               onChange={(e) => set("ad_name", e.target.value)}
               disabled={!allowTitle}
               title={allowTitle ? "" : "Only Founder or Strategist can edit the title"}
-              placeholder="Untitled"
+              placeholder={isNew ? "Name this ad" : "Untitled"}
+              autoFocus={isNew}
               style={{
                 fontSize: "18px",
                 fontWeight: 600,
@@ -473,7 +517,7 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete }: Ad
             />
           </div>
           <button
-            onClick={onClose}
+            onClick={close}
             style={{
               background: "none",
               border: "none",
@@ -970,7 +1014,7 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete }: Ad
           {/* Close + Save (right side) */}
           <div style={{ display: "flex", gap: "8px" }}>
             <button
-              onClick={onClose}
+              onClick={close}
               style={{
                 padding: "8px 14px", backgroundColor: "transparent",
                 border: "1px solid var(--border)", borderRadius: "6px",

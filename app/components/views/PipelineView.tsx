@@ -6,7 +6,6 @@ import { useAds } from "@/app/hooks/useAds";
 import { useMyRole } from "@/app/hooks/useMyRole";
 import { can } from "@/app/lib/permissions";
 import { useSettings } from "@/app/hooks/useSettings";
-import NewAdModal from "@/app/components/modals/NewAdModal";
 import AdDetailModal from "@/app/components/modals/AdDetailModal";
 import type { Ad } from "@/app/types";
 
@@ -69,8 +68,35 @@ export default function PipelineView() {
   const [closedSearch, setClosedSearch] = useState("");
   const [closedFilter, setClosedFilter] = useState<"all" | "Winner" | "Killed">("all");
 
-  const [showNewAd, setShowNewAd] = useState(false);
   const [openAd, setOpenAd] = useState<Ad | null>(null);
+  // Id of an ad created by "New ad" that hasn't been touched yet. Closing the
+  // modal without filling anything in deletes it again, so a stray click
+  // doesn't leave an empty card on the board.
+  const [newAdId, setNewAdId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  // "New ad" goes straight to the full detail modal (Nemanja's ask) rather
+  // than a short form first: the row is created up front so every field in
+  // the modal autosaves exactly as it does for an existing ad.
+  async function startNewAd() {
+    if (creating) return;
+    setCreating(true);
+    const ad = await createAd({
+      dtc_number: nextDtcNumber(),
+      ad_name: "",
+      product: null,
+      assigned_editor: null,
+      assigned_strategist: null,
+      persona: null,
+      priority: "Medium",
+      created_by: null,
+    });
+    setCreating(false);
+    if (ad) {
+      setNewAdId(ad.id);
+      setOpenAd(ad);
+    }
+  }
 
   // Selection mode state
   const [selectMode, setSelectMode] = useState(false);
@@ -234,15 +260,16 @@ export default function PipelineView() {
               )}
               {canCreate && (
                 <button
-                  onClick={() => setShowNewAd(true)}
+                  onClick={startNewAd}
+                  disabled={creating}
                   style={{
                     display: "flex", alignItems: "center", gap: "6px",
                     padding: "8px 14px", backgroundColor: "var(--accent)", border: "none",
                     borderRadius: "6px", color: "#0d0d0f", fontSize: "14px", fontWeight: 500,
-                    cursor: "pointer", fontFamily: "inherit",
+                    cursor: creating ? "default" : "pointer", fontFamily: "inherit",
                   }}
                 >
-                  <Plus size={16} strokeWidth={2.25} /> New ad
+                  <Plus size={16} strokeWidth={2.25} /> {creating ? "Creating…" : "New ad"}
                 </button>
               )}
             </>
@@ -491,20 +518,13 @@ export default function PipelineView() {
         );
       })()}
 
-            {showNewAd && (
-        <NewAdModal
-          defaultDtc={nextDtcNumber()}
-          ads={ads}
-          onClose={() => setShowNewAd(false)}
-          onCreate={async (fields) => { await createAd(fields); }}
-        />
-      )}
-
       {liveOpenAd && !selectMode && (
         <AdDetailModal
           ad={liveOpenAd}
           ads={ads}
-          onClose={() => setOpenAd(null)}
+          isNew={liveOpenAd.id === newAdId}
+          onDiscard={async (id) => { await deleteAd(id); }}
+          onClose={() => { setOpenAd(null); setNewAdId(null); }}
           onSave={async (id, fields) => { await updateAd(id, fields); }}
           onDelete={async (id) => { await deleteAd(id); }}
         />
