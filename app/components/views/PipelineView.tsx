@@ -8,6 +8,7 @@ import { can } from "@/app/lib/permissions";
 import { useSettings } from "@/app/hooks/useSettings";
 import AdDetailModal from "@/app/components/modals/AdDetailModal";
 import type { Ad } from "@/app/types";
+import { createdMonth, createdMonthLabel, formatCreated, monthLabel } from "@/app/lib/adDates";
 
 // Timing is derived from due_date rather than stored, so its options are fixed
 // here instead of coming from settings_lists.
@@ -114,6 +115,7 @@ export default function PipelineView() {
   const [fFormat, setFFormat] = useState("");
   const [fPriority, setFPriority] = useState("");
   const [fTiming, setFTiming] = useState<Timing>("");
+  const [fCreated, setFCreated] = useState(""); // a month label, e.g. "September 2026"
   const [fUnassigned, setFUnassigned] = useState(false);
 
   const stages = valuesFor("stage");
@@ -126,6 +128,11 @@ export default function PipelineView() {
   const adTypeOptions = buildOptions(valuesFor("ad_type"), ads, (a) => a.ad_type);
   const formatOptions = buildOptions(valuesFor("format"), ads, (a) => a.format);
   const priorityOptions = buildOptions(valuesFor("priority"), ads, (a) => a.priority);
+  // Created month is derived from created_at, so its options come from the
+  // ads themselves, newest month first.
+  const createdOptions = [...new Set(ads.map((a) => createdMonth(a.created_at)).filter((m): m is string => !!m))]
+    .sort((a, b) => b.localeCompare(a))
+    .map(monthLabel);
   const editorFilterOptions = buildOptions(
     editorOptions.map((m) => m.name),
     ads,
@@ -139,7 +146,7 @@ export default function PipelineView() {
   const weekOut = weekOutDate.toISOString().slice(0, 10);
 
   const activeFilterCount =
-    [fProduct, fPersona, fEditor, fAdType, fFormat, fPriority, fTiming].filter(Boolean).length +
+    [fProduct, fPersona, fEditor, fAdType, fFormat, fPriority, fTiming, fCreated].filter(Boolean).length +
     (fUnassigned ? 1 : 0);
   const anyNarrowing = activeFilterCount > 0 || query.trim() !== "";
 
@@ -151,6 +158,7 @@ export default function PipelineView() {
     setFFormat("");
     setFPriority("");
     setFTiming("");
+    setFCreated("");
     setFUnassigned(false);
   }
 
@@ -162,6 +170,7 @@ export default function PipelineView() {
     if (fFormat && a.format !== fFormat) return false;
     if (fPriority && a.priority !== fPriority) return false;
     if (fUnassigned && a.assigned_editor) return false;
+    if (fCreated && createdMonthLabel(a.created_at) !== fCreated) return false;
 
     if (fTiming === "Overdue") {
       // Matches the rule in MyQueueView/WorkloadView — a closed ad is never overdue.
@@ -344,6 +353,7 @@ export default function PipelineView() {
           onChange={(v) => setFTiming(v as Timing)}
           options={TIMING_OPTIONS as unknown as string[]}
         />
+        <FilterSelect label="Created" value={fCreated} onChange={setFCreated} options={createdOptions} />
 
         {/* Unassigned is a toggle, not a value — it asks for the absence of an editor. */}
         <button
@@ -656,6 +666,7 @@ function AdCard({
         <Row label="Strategist" value={ad.assigned_strategist} />
         <Row label="Editor" value={ad.assigned_editor} />
         <Row label="Persona" value={ad.persona} />
+        <Row label="Created" value={formatCreated(ad.created_at)} />
       </div>
     </div>
   );

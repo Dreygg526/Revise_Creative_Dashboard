@@ -1,17 +1,23 @@
 // ============================================================
-// MONTHLY LEARNINGS — which briefs launched in a month, and how they did.
+// MONTHLY LEARNINGS — which briefs belong to a month, and how they did.
 //
 // Pure: no I/O, so it can be compiled standalone and driven from Node the
 // same way metaMatch.ts and gates.ts are.
 //
 // Definitions, settled 2026-10-04 (Axel's rule: "amount spent x NC ROAS"):
-// - A brief LAUNCHED in the month its first Meta ad first spent. The
-//   dashboard records no launch date; this is the only one there is.
+// - Two views of "the month", both built on every run (the user asked for both):
+//   LAUNCHED — briefs whose first Meta ad first spent in the month. The
+//     dashboard records no launch date; this is the only one there is.
+//   CREATED  — briefs whose dashboard card was created in the month (UTC, the
+//     same rule as the board's Created filter, see adDates.ts). Some of these
+//     haven't launched yet; they are "No spend found" and never judged.
 // - Performance is lifetime to `asOf`, summed over every Meta ad the matcher
 //   attributes to the brief — same roll-up as the sync.
 // - Winner  = spend >= minSpend AND NC ROAS >= ncTarget
 //   Loser   = spend >= minSpend AND NC ROAS <  ncTarget
-//   Too early = spend < minSpend (not enough money behind it to judge)
+//   Too early = spent, but less than minSpend (not enough money to judge)
+//   No spend found = no matched Meta spend: not launched yet, OR live but its
+//     Meta ads carry no DTC number the matcher can place (7 such in Sept)
 // - NC ROAS = new-customer revenue / spend (Triple Attribution, lifetime).
 //
 // This produces a report. It deliberately does NOT write ads.result — the
@@ -20,6 +26,7 @@
 // ============================================================
 
 import { matchInsights, type MetaInsightRow } from "./metaMatch";
+import { createdMonth } from "./adDates";
 import type { Ad } from "@/app/types";
 
 export interface LifetimeRow extends MetaInsightRow {
@@ -28,7 +35,8 @@ export interface LifetimeRow extends MetaInsightRow {
   nc_orders: number;
 }
 
-export type Verdict = "Winner" | "Loser" | "Too early";
+export type Verdict = "Winner" | "Loser" | "Too early" | "No spend found";
+export type ReportMode = "launched" | "created";
 
 export interface LearningCreative {
   ad_id: string;
@@ -55,7 +63,8 @@ export interface LearningBrief {
   format: string | null;
   strategist: string | null;
   editor: string | null;
-  first_spend: string;
+  created_at: string;
+  first_spend: string | null;  // null = never spent
   spend: number;
   revenue: number;
   nc_revenue: number;
@@ -73,10 +82,25 @@ export interface TagRow {
   dimension: string;
   value: string;
   briefs: number;
-  judged: number;        // briefs past minSpend
+  judged: number;        // Winner + Loser
   winners: number;
   spend: number;
   nc_roas: number | null;   // blended: sum NC revenue / sum spend
+}
+
+export interface ReportView {
+  totals: {
+    briefs: number;
+    winners: number;
+    losers: number;
+    too_early: number;
+    not_launched: number;
+    spend: number;
+    nc_revenue: number;
+    nc_roas: number | null;
+  };
+  briefs: LearningBrief[];   // Winner, Loser, Too early, No spend found; spend-sorted within
+  tags: TagRow[];
 }
 
 export interface MonthlyReportData {
@@ -84,19 +108,10 @@ export interface MonthlyReportData {
   as_of: string;           // YYYY-MM-DD
   min_spend: number;
   nc_roas_target: number;
-  totals: {
-    briefs: number;
-    winners: number;
-    losers: number;
-    too_early: number;
-    spend: number;
-    nc_revenue: number;
-    nc_roas: number | null;
-  };
+  launched: ReportView;
+  created: ReportView;
   // Whole Meta account over the calendar month — the baseline.
   account: { spend: number; nc_revenue: number; nc_roas: number | null } | null;
-  briefs: LearningBrief[];   // winners first, then losers, then too early; spend-sorted within
-  tags: TagRow[];
   // Meta ads that first spent this month but match no dashboard brief.
   unmatched: { ads: number; spend: number; top: { ad_name: string; adset_name: string | null; spend: number }[] };
 }
@@ -141,25 +156,25 @@ export function buildMonthlyReport(args: {
   const inMonth = (d: string) => d >= start && d <= end;
 
   const byMetaId = new Map(rows.map((r) => [r.ad_id, r]));
-  const adById = new Map(ads.map((a) => [a.id, a]));
   const { matches, unmatched } = matchInsights(rows, ads);
+  const matchByAd = new Map(matches.map((m) => [m.adId, m]));
 
-  const briefs: LearningBrief[] = [];
-  for (const m of matches) {
-    const ad = adById.get(m.adId);
-    if (!ad) continue;
-    const metas = m.metaAdIds.map((id) => byMetaId.get(id)).filter((x): x is LifetimeRow => !!x);
-    if (metas.length === 0) continue;
-    const firstSpend = metas.reduce((min, x) => (x.first_spend < min ? x.first_spend : min), metas[0].first_spend);
-    if (!inMonth(firstSpend)) continue;
-
+  // One record per dashboard ad; the two views are filters over these.
+  const all: LearningBrief[] = ads.map((ad) => {
+    const m = matchByAd.get(ad.id);
+    const metas = (m?.metaAdIds ?? []).map((id) => byMetaId.get(id)).filter((x): x is LifetimeRow => !!x);
+    const spend = m?.spend ?? 0;
+    const firstSpend = metas.length
+      ? metas.reduce((min, x) => (x.first_spend < min ? x.first_spend : min), metas[0].first_spend)
+      : null;
     const ncRevenue = metas.reduce((s, x) => s + x.nc_revenue, 0);
-    const ncOrders = metas.reduce((s, x) => s + x.nc_orders, 0);
-    const ncRoas = ratio(ncRevenue, m.spend);
+    const ncRoas = ratio(ncRevenue, spend);
     const verdict: Verdict =
-      m.spend < minSpend ? "Too early" : (ncRoas ?? 0) >= ncTarget ? "Winner" : "Loser";
+      !firstSpend ? "No spend found"
+      : spend < minSpend ? "Too early"
+      : (ncRoas ?? 0) >= ncTarget ? "Winner" : "Loser";
 
-    briefs.push({
+    return {
       ad_id: ad.id,
       dtc_number: ad.dtc_number,
       name: ad.ad_name || "",
@@ -175,15 +190,16 @@ export function buildMonthlyReport(args: {
       format: ad.format,
       strategist: ad.assigned_strategist,
       editor: ad.assigned_editor,
+      created_at: ad.created_at,
       first_spend: firstSpend,
-      spend: m.spend,
-      revenue: m.revenue,
+      spend,
+      revenue: m?.revenue ?? 0,
       nc_revenue: ncRevenue,
-      purchases: m.purchases,
-      nc_orders: ncOrders,
+      purchases: m?.purchases ?? 0,
+      nc_orders: metas.reduce((s, x) => s + x.nc_orders, 0),
       nc_roas: ncRoas,
-      roas: ratio(m.revenue, m.spend),
-      cpa: m.purchases > 0 ? m.spend / m.purchases : null,
+      roas: ratio(m?.revenue ?? 0, spend),
+      cpa: m && m.purchases > 0 ? m.spend / m.purchases : null,
       meta_ads: metas.length,
       verdict,
       top_creatives: [...metas]
@@ -197,11 +213,46 @@ export function buildMonthlyReport(args: {
           spend: x.spend,
           nc_roas: ratio(x.nc_revenue, x.spend),
         })),
-    });
-  }
+    };
+  });
 
-  const order: Record<Verdict, number> = { Winner: 0, Loser: 1, "Too early": 2 };
-  briefs.sort((a, b) => order[a.verdict] - order[b.verdict] || b.spend - a.spend);
+  const unm = unmatched
+    .map((u) => ({ u, row: byMetaId.get(u.ad_id) }))
+    .filter((x) => x.row && inMonth(x.row.first_spend))
+    .sort((a, b) => b.u.spend - a.u.spend);
+
+  return {
+    month,
+    as_of: asOf,
+    min_spend: minSpend,
+    nc_roas_target: ncTarget,
+    launched: buildView(all.filter((b) => b.first_spend != null && inMonth(b.first_spend))),
+    created: buildView(all.filter((b) => createdMonth(b.created_at) === month)),
+    account: args.account
+      ? {
+          spend: args.account.spend,
+          nc_revenue: args.account.ncRevenue,
+          nc_roas: ratio(args.account.ncRevenue, args.account.spend),
+        }
+      : null,
+    unmatched: {
+      ads: unm.length,
+      spend: unm.reduce((s, x) => s + x.u.spend, 0),
+      top: unm.slice(0, 10).map((x) => ({
+        ad_name: x.u.ad_name,
+        adset_name: x.row!.adset_name,
+        spend: x.u.spend,
+      })),
+    },
+  };
+}
+
+const VERDICT_ORDER: Record<Verdict, number> = { Winner: 0, Loser: 1, "Too early": 2, "No spend found": 3 };
+
+function buildView(list: LearningBrief[]): ReportView {
+  const briefs = [...list].sort(
+    (a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict] || b.spend - a.spend
+  );
 
   // Tag breakdown. Blended NC ROAS per bucket (sum over sum), never a mean
   // of per-brief ratios — same rule as CVR and CPA elsewhere in the app.
@@ -214,15 +265,15 @@ export function buildMonthlyReport(args: {
       if (!buckets.has(value)) buckets.set(value, []);
       buckets.get(value)!.push(b);
     }
-    for (const [value, list] of buckets) {
-      const spend = list.reduce((s, b) => s + b.spend, 0);
-      const nc = list.reduce((s, b) => s + b.nc_revenue, 0);
+    for (const [value, bucket] of buckets) {
+      const spend = bucket.reduce((s, b) => s + b.spend, 0);
+      const nc = bucket.reduce((s, b) => s + b.nc_revenue, 0);
       tags.push({
         dimension: dim.label,
         value,
-        briefs: list.length,
-        judged: list.filter((b) => b.verdict !== "Too early").length,
-        winners: list.filter((b) => b.verdict === "Winner").length,
+        briefs: bucket.length,
+        judged: bucket.filter((b) => b.verdict === "Winner" || b.verdict === "Loser").length,
+        winners: bucket.filter((b) => b.verdict === "Winner").length,
         spend,
         nc_roas: ratio(nc, spend),
       });
@@ -230,45 +281,21 @@ export function buildMonthlyReport(args: {
   }
   tags.sort((a, b) => a.dimension.localeCompare(b.dimension) || b.spend - a.spend);
 
-  const unm = unmatched
-    .map((u) => ({ u, row: byMetaId.get(u.ad_id) }))
-    .filter((x) => x.row && inMonth(x.row.first_spend))
-    .sort((a, b) => b.u.spend - a.u.spend);
-
   const spend = briefs.reduce((s, b) => s + b.spend, 0);
   const nc = briefs.reduce((s, b) => s + b.nc_revenue, 0);
-
+  const count = (v: Verdict) => briefs.filter((b) => b.verdict === v).length;
   return {
-    month,
-    as_of: asOf,
-    min_spend: minSpend,
-    nc_roas_target: ncTarget,
     totals: {
       briefs: briefs.length,
-      winners: briefs.filter((b) => b.verdict === "Winner").length,
-      losers: briefs.filter((b) => b.verdict === "Loser").length,
-      too_early: briefs.filter((b) => b.verdict === "Too early").length,
+      winners: count("Winner"),
+      losers: count("Loser"),
+      too_early: count("Too early"),
+      not_launched: count("No spend found"),
       spend,
       nc_revenue: nc,
       nc_roas: ratio(nc, spend),
     },
-    account: args.account
-      ? {
-          spend: args.account.spend,
-          nc_revenue: args.account.ncRevenue,
-          nc_roas: ratio(args.account.ncRevenue, args.account.spend),
-        }
-      : null,
     briefs,
     tags,
-    unmatched: {
-      ads: unm.length,
-      spend: unm.reduce((s, x) => s + x.u.spend, 0),
-      top: unm.slice(0, 10).map((x) => ({
-        ad_name: x.u.ad_name,
-        adset_name: x.row!.adset_name,
-        spend: x.u.spend,
-      })),
-    },
   };
 }

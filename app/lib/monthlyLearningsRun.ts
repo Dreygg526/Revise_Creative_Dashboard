@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Ad } from "@/app/types";
 import { fetchTripleWhaleLifetimeAds, fetchTripleWhalePeriodTotals } from "@/app/lib/tripleWhale";
-import { buildMonthlyReport, monthBounds, type MonthlyReportData } from "@/app/lib/monthlyLearnings";
+import { buildMonthlyReport, monthBounds, type MonthlyReportData, type ReportMode } from "@/app/lib/monthlyLearnings";
 
 // Axel's numbers, 2026-10-04: "$500 … and 0.95 nc". Overridable per run and
 // remembered in settings_targets so the next run (and the cron) reuse them.
@@ -25,6 +25,8 @@ export const SummarySchema = z.object({
   next_month: z.array(z.string()),
 });
 export type LearningsSummary = z.infer<typeof SummarySchema>;
+// One write-up per view. Stored as this object in monthly_learnings.summary.
+export type LearningsSummaries = Record<ReportMode, LearningsSummary | null>;
 
 export async function loadThresholds(admin: SupabaseClient) {
   const { data } = await admin
@@ -54,9 +56,9 @@ export function yesterday(): string {
 
 const SYSTEM = `You write the monthly creative learnings for a DTC supplement brand's ad team (The Standard Lab — NAC-based liver/bloating/belly-fat products, sold through Meta ads).
 
-You get one month's newly launched briefs as JSON. Each brief is a creative concept (a "DTC #") with several Meta ads under it, tagged with the strategy fields the team uses: persona, problem, core emotion, awareness, angle, ad type (Imitation / Ideation / Iteration / New Concept), format, strategist and editor.
+You get one month's briefs as JSON. "view" says which: "launched" = briefs that first started spending this month; "created" = briefs whose card was created (briefed) this month, some of which have not launched yet. Each brief is a creative concept (a "DTC #") with several Meta ads under it, tagged with the strategy fields the team uses: persona, problem, core emotion, awareness, angle, ad type (Imitation / Ideation / Iteration / New Concept), format, strategist and editor.
 
-The team's rule: a brief is a Winner when it spent at least min_spend and its NC ROAS (new-customer revenue ÷ spend) reached nc_roas_target. Below min_spend it is "Too early" and must not be called a winner or a loser.
+The team's rule: a brief is a Winner when it spent at least min_spend and its NC ROAS (new-customer revenue ÷ spend) reached nc_roas_target. Below min_spend it is "Too early" and must not be called a winner or a loser. "No spend found" means no Meta spend could be matched to it — usually not launched yet, sometimes live but its Meta ads are named without its DTC number. In the created view, say how many there are, but never judge them.
 
 Write for strategists who will read this in two minutes and decide what to make next month:
 - Use only numbers present in the data. Never invent or estimate a figure.
@@ -67,7 +69,8 @@ Write for strategists who will read this in two minutes and decide what to make 
 - "next_month" is concrete bets: what to iterate on, what to stop, what to test. 3–5 items.
 - Each list item is one or two plain sentences. No markdown, no headers.`;
 
-async function summarise(report: MonthlyReportData): Promise<LearningsSummary> {
+async function summarise(report: MonthlyReportData, mode: ReportMode): Promise<LearningsSummary> {
+  const view = report[mode];
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   // Trim to what the write-up needs; ids and creative-level ad ids are noise.
@@ -76,12 +79,14 @@ async function summarise(report: MonthlyReportData): Promise<LearningsSummary> {
     as_of: report.as_of,
     min_spend: report.min_spend,
     nc_roas_target: report.nc_roas_target,
-    totals: report.totals,
+    view: mode,
+    totals: view.totals,
     account_month: report.account,
-    briefs: report.briefs.map((b) => ({
+    briefs: view.briefs.map((b) => ({
       dtc: b.dtc_number,
       name: b.name,
       verdict: b.verdict,
+      created: b.created_at.slice(0, 10),
       launched: b.first_spend,
       spend: Math.round(b.spend),
       nc_roas: b.nc_roas == null ? null : +b.nc_roas.toFixed(2),
@@ -104,7 +109,7 @@ async function summarise(report: MonthlyReportData): Promise<LearningsSummary> {
         nc_roas: c.nc_roas == null ? null : +c.nc_roas.toFixed(2),
       })),
     })),
-    tag_breakdown: report.tags.map((t) => ({
+    tag_breakdown: view.tags.map((t) => ({
       ...t,
       spend: Math.round(t.spend),
       nc_roas: t.nc_roas == null ? null : +t.nc_roas.toFixed(2),
@@ -129,7 +134,7 @@ async function summarise(report: MonthlyReportData): Promise<LearningsSummary> {
 export interface RunResult {
   month: string;
   data: MonthlyReportData;
-  summary: LearningsSummary | null;
+  summary: LearningsSummaries;
   summary_error: string | null;
   saved: boolean;
   save_error: string | null;
@@ -166,19 +171,28 @@ export async function runMonthlyLearnings(
     account,
   });
 
-  let summary: LearningsSummary | null = null;
-  let summaryError: string | null = null;
-  if (data.briefs.length === 0) {
-    summaryError = "No briefs started spending in this month, so there is nothing to summarise.";
-  } else if (!process.env.ANTHROPIC_API_KEY) {
-    summaryError = "Server is missing ANTHROPIC_API_KEY, so the written summary was skipped.";
-  } else {
+  // Both write-ups in parallel; one failing doesn't cost the other.
+  const errors: string[] = [];
+  async function one(mode: ReportMode): Promise<LearningsSummary | null> {
+    const label = mode === "launched" ? "Launched" : "Created";
+    if (data[mode].totals.winners + data[mode].totals.losers === 0) {
+      errors.push(`${label} view: no brief has enough spend to judge yet, so there's nothing to summarise.`);
+      return null;
+    }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      errors.push("Server is missing ANTHROPIC_API_KEY, so the written summary was skipped.");
+      return null;
+    }
     try {
-      summary = await summarise(data);
+      return await summarise(data, mode);
     } catch (e) {
-      summaryError = e instanceof Error ? e.message : "The summary step failed.";
+      errors.push(`${label} view: ${e instanceof Error ? e.message : "the summary step failed."}`);
+      return null;
     }
   }
+  const [launchedSummary, createdSummary] = await Promise.all([one("launched"), one("created")]);
+  const summary: LearningsSummaries = { launched: launchedSummary, created: createdSummary };
+  const summaryError = errors.length ? [...new Set(errors)].join(" ") : null;
 
   // A missing table costs persistence, not the report — same spirit as the
   // v4/v5 column probes in meta-sync. The caller still gets everything.

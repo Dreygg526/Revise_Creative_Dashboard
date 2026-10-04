@@ -5,7 +5,9 @@ import { RefreshCw, Sparkles, TrendingUp, TrendingDown, Target, Lightbulb, Penci
 import { useMonthlyLearnings, type MonthlyLearningsReport } from "@/app/hooks/useMonthlyLearnings";
 import { useMyRole } from "@/app/hooks/useMyRole";
 import { can } from "@/app/lib/permissions";
-import type { LearningBrief, Verdict } from "@/app/lib/monthlyLearnings";
+import type { LearningBrief, ReportMode, ReportView, Verdict } from "@/app/lib/monthlyLearnings";
+import type { LearningsSummary } from "@/app/hooks/useMonthlyLearnings";
+import { formatCreated, monthLabel } from "@/app/lib/adDates";
 import type { Ad } from "@/app/types";
 
 // A tag bucket with fewer judged briefs than this is shown, but greyed and
@@ -16,15 +18,27 @@ const VERDICT_STYLE: Record<Verdict, { bg: string; fg: string; bar: string }> = 
   Winner: { bg: "#052e16", fg: "#4ade80", bar: "#16a34a" },
   Loser: { bg: "#450a0a", fg: "#fca5a5", bar: "#dc2626" },
   "Too early": { bg: "var(--raised)", fg: "var(--text-secondary)", bar: "var(--border)" },
+  "No spend found": { bg: "transparent", fg: "var(--text-muted)", bar: "var(--border)" },
 };
+
+// Reports saved before 2026-10-04's created-month view had one flat view and
+// one summary. Read them as the launched view rather than breaking them.
+function viewsOf(report: MonthlyLearningsReport): { launched: ReportView; created: ReportView | null } {
+  const d = report.data as unknown as Record<string, unknown>;
+  if (d.launched) return { launched: report.data.launched, created: report.data.created };
+  const legacy = d as unknown as ReportView;
+  return { launched: { ...legacy, totals: { ...legacy.totals, not_launched: 0 } }, created: null };
+}
+
+function summaryOf(report: MonthlyLearningsReport, mode: ReportMode): LearningsSummary | null {
+  const s = report.summary as unknown as Record<string, unknown> | null;
+  if (!s) return null;
+  if ("headline" in s) return mode === "launched" ? (s as unknown as LearningsSummary) : null;
+  return (s[mode] as LearningsSummary | null) ?? null;
+}
 
 const money = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
 const x2 = (n: number | null) => (n == null ? "—" : n.toFixed(2));
-
-function monthLabel(m: string) {
-  const [y, mo] = m.split("-").map(Number);
-  return new Date(Date.UTC(y, mo - 1, 1)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
-}
 
 // The last six whole-or-partial months, newest first.
 function recentMonths(): string[] {
@@ -158,12 +172,17 @@ export default function MonthlyLearnings({ ads, onOpenAd }: { ads: Ad[]; onOpenA
 
 function ReportBody({ report, ads, onOpenAd }: { report: MonthlyLearningsReport; ads: Ad[]; onOpenAd: (ad: Ad) => void }) {
   const d = report.data;
+  const views = viewsOf(report);
+  const [mode, setMode] = useState<ReportMode>("launched");
+  const v = (mode === "created" ? views.created : null) ?? views.launched;
+  const summary = summaryOf(report, mode);
   const [verdict, setVerdict] = useState<Verdict | "all">("all");
-  const dims = useMemo(() => [...new Set(d.tags.map((t) => t.dimension))], [d.tags]);
+  const dims = useMemo(() => [...new Set(v.tags.map((t) => t.dimension))], [v.tags]);
   const [dim, setDim] = useState("Persona");
 
-  const briefs = d.briefs.filter((b) => verdict === "all" || b.verdict === verdict);
-  const tagRows = d.tags.filter((t) => t.dimension === dim);
+  const briefs = v.briefs.filter((b) => verdict === "all" || b.verdict === verdict);
+  const tagRows = v.tags.filter((t) => t.dimension === dim);
+  const word = mode === "launched" ? "launched" : "created";
   const target = d.nc_roas_target;
 
   const open = (b: LearningBrief) => {
@@ -180,32 +199,67 @@ function ReportBody({ report, ads, onOpenAd }: { report: MonthlyLearningsReport;
         {" · "}performance is lifetime through {d.as_of}, so it keeps maturing — regenerate later for fuller numbers.
       </div>
 
+      {/* Which month definition */}
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+        <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: "8px", padding: "2px" }}>
+          {([
+            { key: "launched", label: `Launched in ${monthLabel(d.month)}` },
+            { key: "created", label: `Created in ${monthLabel(d.month)}` },
+          ] as const).map((o) => {
+            const active = mode === o.key;
+            const disabled = o.key === "created" && !views.created;
+            return (
+              <button
+                key={o.key}
+                onClick={() => { setMode(o.key); setVerdict("all"); }}
+                disabled={disabled}
+                title={disabled ? "This report was made before the Created view existed. Regenerate it." : undefined}
+                style={{
+                  padding: "5px 12px", borderRadius: "6px", border: "none", fontFamily: "inherit", fontSize: "12px",
+                  cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.4 : 1,
+                  backgroundColor: active ? "var(--accent)" : "transparent",
+                  color: active ? "#0d0d0f" : "var(--text-secondary)", fontWeight: active ? 600 : 400,
+                }}
+              >
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+          {mode === "launched"
+            ? "Briefs whose first Meta ad started spending this month."
+            : "Briefs whose card was created in the dashboard this month — same as the board's Created filter. Ones with no spend found are either not live yet or named in Meta without their DTC #."}
+        </span>
+      </div>
+
       {/* Tiles */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "10px" }}>
-        <Tile label="Briefs launched" value={String(d.totals.briefs)} />
-        <Tile label="Winners" value={String(d.totals.winners)} color="#4ade80" />
-        <Tile label="Losers" value={String(d.totals.losers)} color="#fca5a5" />
-        <Tile label={`Too early (< ${money(d.min_spend)})`} value={String(d.totals.too_early)} />
-        <Tile label="Spend on new briefs" value={money(d.totals.spend)} />
+        <Tile label={`Briefs ${word}`} value={String(v.totals.briefs)} />
+        <Tile label="Winners" value={String(v.totals.winners)} color="#4ade80" />
+        <Tile label="Losers" value={String(v.totals.losers)} color="#fca5a5" />
+        <Tile label={`Too early (< ${money(d.min_spend)})`} value={String(v.totals.too_early)} />
+        {mode === "created" && <Tile label="No spend found" value={String(v.totals.not_launched)} />}
+        <Tile label="Spend on these briefs" value={money(v.totals.spend)} />
         <Tile
-          label="NC ROAS, new briefs"
-          value={x2(d.totals.nc_roas)}
+          label="NC ROAS, these briefs"
+          value={x2(v.totals.nc_roas)}
           sub={d.account ? `account ${x2(d.account.nc_roas)} that month` : undefined}
         />
       </div>
 
       {/* Write-up */}
       <Card>
-        {report.summary ? (
+        {summary ? (
           <>
             <div style={{ fontSize: "15px", lineHeight: 1.55, color: "var(--text)", marginBottom: "16px" }}>
-              {report.summary.headline}
+              {summary.headline}
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "18px" }}>
-              <Section icon={<TrendingUp size={14} color="#4ade80" />} title="What worked" items={report.summary.what_worked} />
-              <Section icon={<TrendingDown size={14} color="#fca5a5" />} title="What didn't" items={report.summary.what_didnt} />
-              <Section icon={<Lightbulb size={14} color="#facc15" />} title="Patterns" items={report.summary.patterns} />
-              <Section icon={<Target size={14} color="#60a5fa" />} title="Bets for next month" items={report.summary.next_month} />
+              <Section icon={<TrendingUp size={14} color="#4ade80" />} title="What worked" items={summary.what_worked} />
+              <Section icon={<TrendingDown size={14} color="#fca5a5" />} title="What didn't" items={summary.what_didnt} />
+              <Section icon={<Lightbulb size={14} color="#facc15" />} title="Patterns" items={summary.patterns} />
+              <Section icon={<Target size={14} color="#60a5fa" />} title="Bets for next month" items={summary.next_month} />
             </div>
             <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "14px" }}>
               Written by Claude from the numbers below. Check anything you act on against the table.
@@ -219,15 +273,18 @@ function ReportBody({ report, ads, onOpenAd }: { report: MonthlyLearningsReport;
       </Card>
 
       {/* Briefs */}
-      <Card title="Briefs launched this month">
+      <Card title={`Briefs ${word} in ${monthLabel(d.month)}`}>
         <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
-          {(["all", "Winner", "Loser", "Too early"] as const).map((v) => {
-            const count = v === "all" ? d.briefs.length : d.briefs.filter((b) => b.verdict === v).length;
-            const active = verdict === v;
+          {(mode === "created"
+            ? (["all", "Winner", "Loser", "Too early", "No spend found"] as const)
+            : (["all", "Winner", "Loser", "Too early"] as const)
+          ).map((f) => {
+            const count = f === "all" ? v.briefs.length : v.briefs.filter((b) => b.verdict === f).length;
+            const active = verdict === f;
             return (
               <button
-                key={v}
-                onClick={() => setVerdict(v)}
+                key={f}
+                onClick={() => setVerdict(f)}
                 style={{
                   padding: "4px 11px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", cursor: "pointer",
                   border: active ? "none" : "1px solid var(--border)",
@@ -235,7 +292,7 @@ function ReportBody({ report, ads, onOpenAd }: { report: MonthlyLearningsReport;
                   color: active ? "#0d0d0f" : "var(--text-secondary)", fontWeight: active ? 600 : 400,
                 }}
               >
-                {v === "all" ? "All" : v === "Winner" ? "Winners" : v === "Loser" ? "Losers" : "Too early"}{" "}
+                {f === "all" ? "All" : f === "Winner" ? "Winners" : f === "Loser" ? "Losers" : f}{" "}
                 <span style={{ opacity: 0.6 }}>{count}</span>
               </button>
             );
@@ -245,8 +302,8 @@ function ReportBody({ report, ads, onOpenAd }: { report: MonthlyLearningsReport;
           <table style={tableStyle}>
             <thead>
               <tr>
-                {["DTC", "Brief", "Verdict", "Launched", "Spend", "NC ROAS", "ROAS", "CPA", "Meta ads", "Persona", "Format", "Strategist"].map((h, i) => (
-                  <th key={h} style={{ ...th, textAlign: i >= 4 && i <= 8 ? "right" : "left" }}>{h}</th>
+                {["DTC", "Brief", "Verdict", "Created", "Launched", "Spend", "NC ROAS", "ROAS", "CPA", "Meta ads", "Persona", "Format", "Strategist"].map((h, i) => (
+                  <th key={h} style={{ ...th, textAlign: i >= 5 && i <= 9 ? "right" : "left" }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -261,9 +318,10 @@ function ReportBody({ report, ads, onOpenAd }: { report: MonthlyLearningsReport;
                     {b.name || "Untitled"}
                   </td>
                   <td style={td}><VerdictBadge v={b.verdict} /></td>
-                  <td style={{ ...td, color: "var(--text-secondary)" }}>{b.first_spend.slice(5)}</td>
+                  <td style={{ ...td, color: "var(--text-secondary)" }}>{b.created_at ? formatCreated(b.created_at) : "—"}</td>
+                  <td style={{ ...td, color: "var(--text-secondary)" }}>{b.first_spend ? formatCreated(b.first_spend + "T00:00:00Z") : "—"}</td>
                   <td style={tdNum}>{money(b.spend)}</td>
-                  <td style={{ ...tdNum, fontWeight: 600, color: b.verdict === "Too early" ? "var(--text-secondary)" : (b.nc_roas ?? 0) >= target ? "#4ade80" : "#fca5a5" }}>
+                  <td style={{ ...tdNum, fontWeight: 600, color: b.verdict === "Too early" || b.verdict === "No spend found" ? "var(--text-secondary)" : (b.nc_roas ?? 0) >= target ? "#4ade80" : "#fca5a5" }}>
                     {x2(b.nc_roas)}
                   </td>
                   <td style={tdNum}>{x2(b.roas)}</td>
@@ -337,7 +395,7 @@ function ReportBody({ report, ads, onOpenAd }: { report: MonthlyLearningsReport;
         </div>
       </Card>
 
-      {d.unmatched.ads > 0 && (
+      {mode === "launched" && d.unmatched.ads > 0 && (
         <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
           Not counted: {d.unmatched.ads} Meta ads ({money(d.unmatched.spend)}) also started spending this month but
           carry no DTC number the dashboard knows

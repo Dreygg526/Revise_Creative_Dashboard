@@ -20,7 +20,7 @@ export interface MonthlyLearningsReport {
   min_spend: number;
   nc_roas_target: number;
   data: MonthlyReportData;
-  summary: LearningsSummary | null;
+  summary: Record<"launched" | "created", LearningsSummary | null> | null;
   summary_error: string | null;
   saved?: boolean;          // false only for a run whose save failed
   save_error?: string | null;

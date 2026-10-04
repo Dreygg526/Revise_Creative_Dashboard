@@ -28,8 +28,9 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       month: r.month,
-      briefs: r.data.totals.briefs,
-      winners: r.data.totals.winners,
+      launched: r.data.launched.totals.briefs,
+      created: r.data.created.totals.briefs,
+      winners: r.data.launched.totals.winners,
       saved: r.saved,
       save_error: r.save_error,
       summary_error: r.summary_error,

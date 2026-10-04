@@ -9,6 +9,7 @@ import { can } from "@/app/lib/permissions";
 import CloseOutModal from "@/app/components/modals/CloseOutModal";
 import PreLaunchModal from "@/app/components/modals/PreLaunchModal";
 import EditorSelect from "@/app/components/modals/EditorSelect";
+import { createdMonthLabel, formatCreated } from "@/app/lib/adDates";
 import { STAGE_ORDER, checkMove, stageIndex, isSelfProduced } from "@/app/lib/gates";
 import type { Ad, MetaBreakdownRow } from "@/app/types";
 
@@ -484,6 +485,11 @@ export default function AdDetailModal({ ad, ads, onClose, onSave, onDelete, isNe
                   {draft.dtc_number != null ? `DTC #${draft.dtc_number}` : "No DTC #"}
                   {"  ·  "}
                   {draft.stage}
+                  {ad.created_at && (
+                    <span title={`Filed under ${createdMonthLabel(ad.created_at)} in the board's Created filter`}>
+                      {"  ·  "}Created {formatCreated(ad.created_at)}
+                    </span>
+                  )}
                 </span>
               )}
               {saveStatus === "saving" && <span style={{ color: "var(--text-secondary)" }}>· Saving…</span>}
