@@ -273,6 +273,90 @@ export async function fetchTripleWhaleRows(datePreset: string): Promise<Provider
   return { rows, images };
 }
 
+// ---- Monthly learnings ----
+// Lifetime per-ad totals plus the first day each ad spent, which is the only
+// launch date that exists anywhere — the dashboard never records one.
+// Aliases must not reuse a column name: `SUM(spend) AS spend` makes ClickHouse
+// read the `spend` inside minIf() as the aggregate and reject the query.
+//
+// No model filter: pixel_joined_tvf holds one row set per attribution model ×
+// window (35 of them), but an unfiltered query returns only the default,
+// Triple Attribution / lifetime — the same figures the sync has always used.
+// Verified 2026-10-04: unfiltered September totals equal that one group exactly.
+const LIFETIME_QUERY = `
+  SELECT
+    ad_id,
+    any(ad_name)          AS ad_name,
+    any(adset_name)       AS adset_name,
+    any(campaign_name)    AS campaign_name,
+    any(account_id)       AS account_id,
+    minIf(event_date, spend > 0)    AS first_spend,
+    SUM(spend)                      AS total_spend,
+    SUM(orders_quantity)            AS purchases,
+    SUM(order_revenue)              AS revenue,
+    SUM(new_customer_order_revenue) AS nc_revenue,
+    SUM(new_customer_orders)        AS nc_orders,
+    SUM(impressions)                AS impressions,
+    SUM(clicks)                     AS clicks
+  FROM pixel_joined_tvf
+  WHERE event_date BETWEEN @startDate AND @endDate
+    AND channel = '${META_CHANNEL}'
+  GROUP BY ad_id
+  HAVING total_spend > 0
+`;
+
+const PERIOD_TOTALS_QUERY = `
+  SELECT
+    SUM(spend)                      AS total_spend,
+    SUM(new_customer_order_revenue) AS nc_revenue,
+    SUM(order_revenue)              AS revenue
+  FROM pixel_joined_tvf
+  WHERE event_date BETWEEN @startDate AND @endDate
+    AND channel = '${META_CHANNEL}'
+`;
+
+export interface LifetimeAdRow extends MetaInsightRow {
+  first_spend: string;   // YYYY-MM-DD
+  nc_revenue: number;
+  nc_orders: number;
+}
+
+export async function fetchTripleWhaleLifetimeAds(endDate: string): Promise<LifetimeAdRow[]> {
+  const start = new Date(new Date(endDate).getTime() - PRESET_DAYS.maximum * 86_400_000);
+  const raw = await runSql<Record<string, unknown>>(LIFETIME_QUERY, {
+    startDate: start.toISOString().slice(0, 10),
+    endDate,
+  });
+  const out: LifetimeAdRow[] = [];
+  for (const r of raw) {
+    const adId = r.ad_id == null ? "" : String(r.ad_id);
+    if (!adId || !r.first_spend) continue;
+    out.push({
+      ad_id: adId,
+      ad_name: (r.ad_name as string) ?? "",
+      adset_name: (r.adset_name as string) ?? null,
+      campaign_name: (r.campaign_name as string) ?? null,
+      account_id: r.account_id ? String(r.account_id) : null,
+      spend: num(r.total_spend),
+      purchases: num(r.purchases),
+      revenue: num(r.revenue),
+      impressions: num(r.impressions),
+      clicks: num(r.clicks),
+      first_spend: String(r.first_spend).slice(0, 10),
+      nc_revenue: num(r.nc_revenue),
+      nc_orders: num(r.nc_orders),
+    });
+  }
+  return out;
+}
+
+// Whole-account Meta totals for one window — the baseline a month's briefs
+// are read against ("0.95 NC" means little without knowing the account ran 0.83).
+export async function fetchTripleWhalePeriodTotals(startDate: string, endDate: string) {
+  const [r] = await runSql<Record<string, unknown>>(PERIOD_TOTALS_QUERY, { startDate, endDate });
+  return { spend: num(r?.total_spend), ncRevenue: num(r?.nc_revenue), revenue: num(r?.revenue) };
+}
+
 // Which provider a sync should use. Triple Whale wins when configured: it
 // matched materially more spend in testing, and its revenue is pixel-attributed
 // rather than Meta's self-report. Unset the key to fall back to Meta direct.

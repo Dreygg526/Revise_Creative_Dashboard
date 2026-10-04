@@ -107,6 +107,21 @@ export function requireAgentKey(req: Request): { ok: true } | AuthFail {
   return { ok: true };
 }
 
+// Verify Vercel Cron. Vercel sends `Authorization: Bearer $CRON_SECRET` on
+// every scheduled invocation when that env var is set. Same fail-closed rule
+// as the agent key: unset or short means every call is refused.
+export function requireCronSecret(req: Request): { ok: true } | AuthFail {
+  const configured = process.env.CRON_SECRET || "";
+  const presented = bearer(req);
+  if (!presented || configured.length < MIN_KEY_LENGTH || !sameSecret(presented, configured)) {
+    if (configured.length < MIN_KEY_LENGTH) {
+      console.warn(`[cron] CRON_SECRET is unset or shorter than ${MIN_KEY_LENGTH} characters — cron calls are rejected.`);
+    }
+    return { ok: false, error: "Unauthorized.", status: 401 };
+  }
+  return { ok: true };
+}
+
 // Hash both sides first so timingSafeEqual always gets equal-length buffers.
 // Comparing raw strings would throw on a length mismatch, and the throw
 // itself leaks the real key's length.

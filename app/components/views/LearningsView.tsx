@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import { useAds } from "@/app/hooks/useAds";
 import AdDetailModal from "@/app/components/modals/AdDetailModal";
+import MonthlyLearnings from "@/app/components/learnings/MonthlyLearnings";
 import { calcCpa } from "@/app/types";
 import type { Ad } from "@/app/types";
 
@@ -11,6 +12,7 @@ type Filter = "all" | "Winner" | "Killed";
 export default function LearningsView() {
   const { ads, loading, error, updateAd, deleteAd } = useAds();
   const [filter, setFilter] = useState<Filter>("all");
+  const [tab, setTab] = useState<"monthly" | "ads">("monthly");
   const [openAd, setOpenAd] = useState<Ad | null>(null);
 
   // Keep the open ad in sync with the latest data after a save.
@@ -41,10 +43,37 @@ export default function LearningsView() {
           Learnings
         </h1>
         <p style={{ color: "var(--text-secondary)", marginTop: "4px", fontSize: "14px" }}>
-          Captured automatically every time an ad is closed.
+          {tab === "monthly"
+            ? "Every brief launched in a month, judged on NC ROAS, with a write-up of what worked."
+            : "Captured automatically every time an ad is closed."}
         </p>
       </div>
 
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: "2px", borderBottom: "1px solid var(--border)", marginBottom: "20px" }}>
+        {([
+          { key: "monthly", label: "Monthly reports" },
+          { key: "ads", label: "Ad learnings" },
+        ] as const).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            style={{
+              padding: "8px 14px", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit",
+              fontSize: "13px", fontWeight: tab === t.key ? 600 : 400,
+              color: tab === t.key ? "var(--text)" : "var(--text-secondary)",
+              borderBottom: tab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
+              marginBottom: "-1px",
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "monthly" && <MonthlyLearnings ads={ads} onOpenAd={setOpenAd} />}
+
+      {tab === "ads" && (<>
       {/* Filter */}
       <div style={{ display: "flex", gap: "8px", marginBottom: "20px" }}>
         {FILTERS.map((f) => {
@@ -92,6 +121,7 @@ export default function LearningsView() {
           )}
         </div>
       )}
+      </>)}
 
       {liveOpenAd && (
         <AdDetailModal
