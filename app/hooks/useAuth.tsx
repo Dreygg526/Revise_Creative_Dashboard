@@ -66,10 +66,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { error } = await supabase.auth.updateUser({ password: newPassword });
     if (error) return { error: error.message };
 
-    // Mark this member active in team_members (match by email).
-    const email = (await supabase.auth.getUser()).data.user?.email;
-    if (email) {
-      await supabase.from("team_members").update({ status: "active" }).eq("email", email);
+    // Mark this member active in team_members. Under rls_lockdown.sql only a
+    // Founder can update that table, so this goes through a database function
+    // that flips status and nothing else. The direct update is the fallback
+    // for a database where the lockdown SQL hasn't been run yet.
+    const { error: rpcError } = await supabase.rpc("activate_my_membership");
+    if (rpcError) {
+      const email = (await supabase.auth.getUser()).data.user?.email;
+      if (email) {
+        await supabase.from("team_members").update({ status: "active" }).eq("email", email);
+      }
     }
     setNeedsPassword(false);
     return { error: null };
