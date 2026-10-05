@@ -20,6 +20,7 @@ import { matchInsights, extractDtcVariant } from "@/app/lib/metaMatch";
 import {
   fetchTripleWhaleAdsInRange,
   fetchTripleWhaleAccountDaily,
+  fetchTripleWhaleByAccount,
   type LifetimeAdRow,
 } from "@/app/lib/tripleWhale";
 import { loadThresholds, yesterday } from "@/app/lib/monthlyLearningsRun";
@@ -127,19 +128,44 @@ interface Ctx {
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 
-function resolveWindow(ctx: Ctx, start?: string, end?: string) {
+// Names the team uses for the accounts it knows. Others show as their id.
+const ACCOUNT_LABELS: Record<string, string> = {
+  act_2223260745102430: "Ad Account 12345",
+  act_1483472386914314: "Ad Account 7 (disabled)",
+};
+const accountLabel = (id: string | null) => (id ? ACCOUNT_LABELS[id] ?? id : null);
+
+// "Ad Account 12345", "12345", "act_2223…" or the bare number -> act_ id.
+function normalizeAccount(input?: string): string | null {
+  if (!input?.trim()) return null;
+  const t = input.trim();
+  for (const [id, label] of Object.entries(ACCOUNT_LABELS)) {
+    if (t.toLowerCase() === label.toLowerCase() || t.toLowerCase() === label.toLowerCase().replace(/ \(.*\)$/, "")) return id;
+  }
+  if (/^(ad account )?12345$/i.test(t)) return "act_2223260745102430";
+  const digits = t.replace(/^act_/i, "").replace(/\D/g, "");
+  if (digits.length >= 8) return `act_${digits}`;
+  throw new Error(`Unknown ad account "${t}". Use spend_by_account to list them.`);
+}
+
+function resolveWindow(ctx: Ctx, start?: string, end?: string, account?: string) {
   const e = end && end < ctx.asOf ? end : ctx.asOf;
   const allStart = new Date(new Date(ctx.asOf).getTime() - ALL_TIME_DAYS * 86_400_000).toISOString().slice(0, 10);
   const s = start && start > allStart ? start : allStart;
-  return { start: s, end: e, all_time: !start };
+  const acct = normalizeAccount(account);
+  return { start: s, end: e, all_time: !start, account: acct, account_label: accountLabel(acct) };
 }
 
-function windowData(ctx: Ctx, start: string, end: string): Promise<WindowData> {
-  const key = `${start}|${end}`;
+// With an account, only that account's Meta ads count: a brief that ran in
+// two accounts shows just its share in the one asked about.
+function windowData(ctx: Ctx, w: { start: string; end: string; account: string | null }): Promise<WindowData> {
+  const { start, end, account } = w;
+  const key = `${start}|${end}|${account ?? "*"}`;
   let p = ctx.windows.get(key);
   if (!p) {
     p = (async () => {
-      const rows = await fetchTripleWhaleAdsInRange(start, end);
+      const all = await fetchTripleWhaleAdsInRange(start, end);
+      const rows = account ? all.filter((r) => r.account_id === account) : all;
       const byMeta = new Map(rows.map((r) => [r.ad_id, r]));
       const { matches, unmatched } = matchInsights(rows, ctx.ads);
       const byAd = new Map<string, BriefPerf>();
@@ -278,6 +304,7 @@ const FilterShape = {
 };
 
 const WindowShape = {
+  ad_account: z.string().optional().describe("Only count this Meta ad account: 'Ad Account 12345', an act_ id, or its number. Omit for all accounts (the default)."),
   start: DATE.optional().describe("Performance window start. Omit for all time (~2 years)."),
   end: DATE.optional().describe("Performance window end. Omit (or anything later) means yesterday."),
 };
@@ -334,9 +361,9 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
       limit: z.number().int().min(1).max(150).optional().describe("Default 40."),
     }),
     run: async (input) => {
-      const w = resolveWindow(ctx, input.start, input.end);
+      const w = resolveWindow(ctx, input.start, input.end, input.ad_account);
       onCall(`Searching briefs${describeFilters(input)} · ${describeWindow(w)}`);
-      const data = await windowData(ctx, w.start, w.end);
+      const data = await windowData(ctx, w);
       let rows = applyFilters(ctx.ads, input).map((ad) => ({ ad, p: data.byAd.get(ad.id) }));
       if (input.only_with_spend) rows = rows.filter((x) => (x.p?.spend ?? 0) > 0);
       if (input.min_spend != null) rows = rows.filter((x) => (x.p?.spend ?? 0) >= input.min_spend!);
@@ -383,11 +410,11 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
       creatives_limit: z.number().int().min(1).max(100).optional().describe("Default 25, highest spend first."),
     }),
     run: async (input) => {
-      const w = resolveWindow(ctx, input.start, input.end);
+      const w = resolveWindow(ctx, input.start, input.end, input.ad_account);
       onCall(`Opening DTC #${input.dtc_number} · ${describeWindow(w)}`);
       const matches = ctx.ads.filter((a) => a.dtc_number === input.dtc_number);
       if (!matches.length) return json({ error: `No brief with DTC #${input.dtc_number} on the dashboard.` });
-      const data = await windowData(ctx, w.start, w.end);
+      const data = await windowData(ctx, w);
       return json({
         window: w,
         rule: ctx.rule,
@@ -453,9 +480,9 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
       ...WindowShape,
     }),
     run: async (input) => {
-      const w = resolveWindow(ctx, input.start, input.end);
+      const w = resolveWindow(ctx, input.start, input.end, input.ad_account);
       onCall(`Comparing by ${input.dimension.replace("_", " ")}${describeFilters(input)} · ${describeWindow(w)}`);
-      const data = await windowData(ctx, w.start, w.end);
+      const data = await windowData(ctx, w);
       const buckets = new Map<string, { ad: Ad; p?: BriefPerf }[]>();
       for (const ad of applyFilters(ctx.ads, input)) {
         const p = data.byAd.get(ad.id);
@@ -495,11 +522,11 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
       granularity: z.enum(["day", "week", "month"]).optional().describe("Default: day up to 31 days, week up to 6 months, month beyond."),
     }),
     run: async (input) => {
-      const w = resolveWindow(ctx, input.start ?? isoDaysAgo(ctx.asOf, 89), input.end);
+      const w = resolveWindow(ctx, input.start ?? isoDaysAgo(ctx.asOf, 89), input.end, input.ad_account);
       const days = (new Date(w.end).getTime() - new Date(w.start).getTime()) / 86_400_000 + 1;
       const g = input.granularity ?? (days <= 31 ? "day" : days <= 183 ? "week" : "month");
       onCall(`Account trend by ${g} · ${describeWindow(w)}`);
-      const series = await fetchTripleWhaleAccountDaily(w.start, w.end);
+      const series = await fetchTripleWhaleAccountDaily(w.start, w.end, w.account);
       const bucketOf = (d: string) => (g === "day" ? d : g === "month" ? d.slice(0, 7) : weekStart(d));
       const agg = new Map<string, { spend: number; revenue: number; nc: number; meta: number; purchases: number; imp: number; clicks: number }>();
       for (const d of series) {
@@ -540,9 +567,9 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
       "Check this when totals look low, or when asked about missing briefs.",
     inputSchema: z.object({ ...WindowShape, limit: z.number().int().min(1).max(60).optional() }),
     run: async (input) => {
-      const w = resolveWindow(ctx, input.start, input.end);
+      const w = resolveWindow(ctx, input.start, input.end, input.ad_account);
       onCall(`Checking unattributed spend · ${describeWindow(w)}`);
-      const data = await windowData(ctx, w.start, w.end);
+      const data = await windowData(ctx, w);
       const spend = data.unmatched.reduce((s, u) => s + u.spend, 0);
       return json({
         window: w,
@@ -623,9 +650,9 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
       ...WindowShape,
     }),
     run: async (input) => {
-      const w = resolveWindow(ctx, input.start, input.end);
+      const w = resolveWindow(ctx, input.start, input.end, input.ad_account);
       onCall(`Looking at creatives for ${input.dtc_numbers.map((n) => `DTC #${n}`).join(", ")}`);
-      const data = await windowData(ctx, w.start, w.end);
+      const data = await windowData(ctx, w);
       const blocks: BetaToolResultContentBlockParam[] = [];
       let shown = 0;
       for (const dtc of input.dtc_numbers) {
@@ -732,9 +759,9 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
     }),
     run: async (input) => {
       if (!input.ad_id && !input.name) return JSON.stringify({ error: "Give an ad_id or a name." });
-      const w = resolveWindow(ctx, input.start, input.end);
+      const w = resolveWindow(ctx, input.start, input.end, input.ad_account);
       onCall(`Looking up Meta ad ${input.ad_id ?? `“${input.name}”`} · ${describeWindow(w)}`);
-      const data = await windowData(ctx, w.start, w.end);
+      const data = await windowData(ctx, w);
       const q = input.name?.toLowerCase();
       const hits = data.rows
         .filter((r) => (input.ad_id ? r.ad_id === input.ad_id : `${r.ad_name} ${r.adset_name ?? ""}`.toLowerCase().includes(q!)))
@@ -780,7 +807,44 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
     },
   });
 
-  return [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, getMetaAd, proposeChanges];
+  const spendByAccount = betaZodTool({
+    name: "spend_by_account",
+    description:
+      "Meta spend and results split by ad account for a window: spend, share, pixel ROAS / NC ROAS, Meta-reported ROAS, purchases, how many ads spent, first and last day of spend. " +
+      "Use it for 'which ad accounts are we using', 'how much did we spend in Ad Account 12345', or before filtering other lookups to one account.",
+    inputSchema: z.object({
+      start: DATE.optional().describe("Window start. Omit for all time (~2 years)."),
+      end: DATE.optional().describe("Window end. Omit for yesterday."),
+    }),
+    run: async (input) => {
+      const w = resolveWindow(ctx, input.start, input.end);
+      onCall(`Splitting spend by ad account · ${describeWindow(w)}`);
+      const rows = await fetchTripleWhaleByAccount(w.start, w.end);
+      const total = rows.reduce((t, r) => t + r.spend, 0);
+      return JSON.stringify({
+        window: w,
+        note: "Pixel numbers are Triple Attribution, lifetime window. meta_reported_roas is Meta's own attribution.",
+        total_spend: r0(total),
+        accounts: rows.map((r) => ({
+          account_id: r.account_id,
+          name: ACCOUNT_LABELS[r.account_id] ?? null,
+          spend: r0(r.spend),
+          share_pct: r2(ratio(r.spend * 100, total)),
+          roas: r2(ratio(r.revenue, r.spend)),
+          nc_roas: r2(ratio(r.nc_revenue, r.spend)),
+          meta_reported_roas: r2(ratio(r.meta_reported_revenue, r.spend)),
+          purchases: r.purchases,
+          cpa: r2(ratio(r.spend, r.purchases)),
+          ctr_pct: r2(r.impressions > 0 ? (r.clicks / r.impressions) * 100 : null),
+          ads_that_spent: r.ads,
+          first_spend: r.first_day,
+          last_spend: r.last_day,
+        })),
+      });
+    },
+  });
+
+  return [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, getMetaAd, spendByAccount, proposeChanges];
 }
 
 // ---------------------------------------------------------------------------
@@ -824,8 +888,8 @@ function describeFilters(f: Partial<Filters>): string {
   return parts.length ? ` (${parts.join(", ")})` : "";
 }
 
-function describeWindow(w: { start: string; end: string; all_time: boolean }): string {
-  return w.all_time ? `all time to ${w.end}` : `${w.start} → ${w.end}`;
+function describeWindow(w: { start: string; end: string; all_time: boolean; account_label?: string | null }): string {
+  return (w.account_label ? `${w.account_label} · ` : "") + (w.all_time ? `all time to ${w.end}` : `${w.start} → ${w.end}`);
 }
 
 function isoDaysAgo(from: string, days: number): string {
@@ -852,6 +916,7 @@ How the data works — you need this to read the numbers correctly:
 - Performance comes from Triple Whale's pixel (Triple Attribution), not Meta's self-reported numbers, and covers all six of the shop's Meta ad accounts. It will not match Ads Manager or Atria exactly — don't treat that as an error.
 - NC ROAS = new-customer revenue ÷ spend. It is the team's headline metric. ROAS = all revenue ÷ spend. Both are margin-blind.
 - Two attributions exist for the same ads. The default numbers (roas, nc_roas, purchases) are Triple Whale's pixel. meta_reported_roas / meta_reported_purchases are Meta's own attribution: what Ads Manager and Triple Whale's Moby show. Spend and impressions are identical in both; purchases and revenue differ, usually with the pixel finding more. When the user compares with Ads Manager or Moby, or asks about "Meta's numbers", lead with the Meta-reported figures and show the pixel ones beside them.
+- The shop has run Meta ads in several ad accounts; Triple Whale sees all of them and every number is all accounts combined unless a tool was given ad_account. Since mid-July 2026 nearly all spend is in "Ad Account 12345" (act_2223260745102430). Use spend_by_account for the split, and pass ad_account when the user asks about one account. Say which account(s) a number covers whenever it matters.
 - Scope matters as much as attribution. A brief sums every Meta ad under it; one Meta ad is a single creative. If the user gives an ad ID or a creative name, use get_meta_ad and answer for that ad, then say which brief it belongs to and how the brief did overall. Always say which scope, which dates and which attribution a number is.
 - The user can attach images (screenshots, creatives, competitors' ads) and PDFs (briefs, reports) to a question. Look at them directly. An attached ad is not necessarily one of ours: only treat it as ours if it carries a DTC number or the user says so, and compare it against our data with the tools when that helps.
 - Links: when you mention a specific Meta ad, you may link it as [Open in Ads Manager](ads_manager_url), using only an ads_manager_url a tool returned.

@@ -405,8 +405,19 @@ export interface AccountDay {
   clicks: number;
 }
 
-export async function fetchTripleWhaleAccountDaily(startDate: string, endDate: string): Promise<AccountDay[]> {
-  const raw = await runSql<Record<string, unknown>>(ACCOUNT_DAILY_QUERY, { startDate, endDate });
+// An account id is inlined into SQL (the API only binds the date params), so
+// it must be exactly act_ + digits. Anything else is refused, never quoted.
+function accountClause(account?: string | null): string {
+  if (!account) return "";
+  if (!/^act_\d{6,25}$/.test(account)) throw new TripleWhaleError(`Not a Meta ad account id: ${account}`, 400);
+  return ` AND account_id = '${account}'`;
+}
+
+export async function fetchTripleWhaleAccountDaily(startDate: string, endDate: string, account?: string | null): Promise<AccountDay[]> {
+  const query = account
+    ? ACCOUNT_DAILY_QUERY.replace(`AND channel = '${META_CHANNEL}'`, `AND channel = '${META_CHANNEL}'${accountClause(account)}`)
+    : ACCOUNT_DAILY_QUERY;
+  const raw = await runSql<Record<string, unknown>>(query, { startDate, endDate });
   return raw.map((r) => ({
     date: String(r.event_date ?? "").slice(0, 10),
     spend: num(r.total_spend),
@@ -417,6 +428,59 @@ export async function fetchTripleWhaleAccountDaily(startDate: string, endDate: s
     meta_reported_revenue: num(r.meta_reported_revenue),
     impressions: num(r.total_impressions),
     clicks: num(r.total_clicks),
+  }));
+}
+
+// Meta spend split by ad account. This shop has run six; see CLAUDE.md.
+const BY_ACCOUNT_QUERY = `
+  SELECT
+    account_id                      AS acct,
+    SUM(spend)                      AS total_spend,
+    SUM(order_revenue)              AS revenue,
+    SUM(new_customer_order_revenue) AS nc_revenue,
+    SUM(channel_reported_conversion_value) AS meta_reported_revenue,
+    SUM(orders_quantity)            AS purchases,
+    SUM(impressions)                AS total_impressions,
+    SUM(clicks)                     AS total_clicks,
+    uniqExactIf(ad_id, spend > 0)   AS ads_spending,
+    minIf(event_date, spend > 0)    AS first_day,
+    maxIf(event_date, spend > 0)    AS last_day
+  FROM pixel_joined_tvf
+  WHERE event_date BETWEEN @startDate AND @endDate
+    AND channel = '${META_CHANNEL}'
+  GROUP BY account_id
+  HAVING total_spend > 0
+  ORDER BY total_spend DESC
+`;
+
+export interface AccountSplitRow {
+  account_id: string;
+  spend: number;
+  revenue: number;
+  nc_revenue: number;
+  meta_reported_revenue: number;
+  purchases: number;
+  impressions: number;
+  clicks: number;
+  ads: number;
+  first_day: string;
+  last_day: string;
+}
+
+export async function fetchTripleWhaleByAccount(startDate: string, endDate: string): Promise<AccountSplitRow[]> {
+  const raw = await runSql<Record<string, unknown>>(BY_ACCOUNT_QUERY, { startDate, endDate });
+  return raw.map((r) => ({
+    account_id: String(r.acct ?? ""),
+    spend: num(r.total_spend),
+    revenue: num(r.revenue),
+    nc_revenue: num(r.nc_revenue),
+    meta_reported_revenue: num(r.meta_reported_revenue),
+    purchases: num(r.purchases),
+    impressions: num(r.total_impressions),
+    clicks: num(r.total_clicks),
+    ads: num(r.ads_spending),
+    first_day: String(r.first_day ?? "").slice(0, 10),
+    last_day: String(r.last_day ?? "").slice(0, 10),
   }));
 }
 
