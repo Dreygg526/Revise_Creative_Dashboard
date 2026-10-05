@@ -323,10 +323,13 @@ export interface LifetimeAdRow extends MetaInsightRow {
 
 export async function fetchTripleWhaleLifetimeAds(endDate: string): Promise<LifetimeAdRow[]> {
   const start = new Date(new Date(endDate).getTime() - PRESET_DAYS.maximum * 86_400_000);
-  const raw = await runSql<Record<string, unknown>>(LIFETIME_QUERY, {
-    startDate: start.toISOString().slice(0, 10),
-    endDate,
-  });
+  return fetchTripleWhaleAdsInRange(start.toISOString().slice(0, 10), endDate);
+}
+
+// Same per-ad totals over an arbitrary window. `first_spend` is then the first
+// day the ad spent *inside the window*, not its real launch date.
+export async function fetchTripleWhaleAdsInRange(startDate: string, endDate: string): Promise<LifetimeAdRow[]> {
+  const raw = await runSql<Record<string, unknown>>(LIFETIME_QUERY, { startDate, endDate });
   const out: LifetimeAdRow[] = [];
   for (const r of raw) {
     const adId = r.ad_id == null ? "" : String(r.ad_id);
@@ -355,6 +358,51 @@ export async function fetchTripleWhaleLifetimeAds(endDate: string): Promise<Life
 export async function fetchTripleWhalePeriodTotals(startDate: string, endDate: string) {
   const [r] = await runSql<Record<string, unknown>>(PERIOD_TOTALS_QUERY, { startDate, endDate });
   return { spend: num(r?.total_spend), ncRevenue: num(r?.nc_revenue), revenue: num(r?.revenue) };
+}
+
+// Whole-account Meta series, one row per day, with new-customer revenue —
+// what "Ask the dashboard" buckets into weeks or months. Aliases avoid column
+// names for the same ClickHouse reason as LIFETIME_QUERY.
+const ACCOUNT_DAILY_QUERY = `
+  SELECT
+    event_date,
+    SUM(spend)                      AS total_spend,
+    SUM(order_revenue)              AS revenue,
+    SUM(new_customer_order_revenue) AS nc_revenue,
+    SUM(orders_quantity)            AS purchases,
+    SUM(new_customer_orders)        AS nc_orders,
+    SUM(impressions)                AS total_impressions,
+    SUM(clicks)                     AS total_clicks
+  FROM pixel_joined_tvf
+  WHERE event_date BETWEEN @startDate AND @endDate
+    AND channel = '${META_CHANNEL}'
+  GROUP BY event_date
+  ORDER BY event_date
+`;
+
+export interface AccountDay {
+  date: string;
+  spend: number;
+  revenue: number;
+  nc_revenue: number;
+  purchases: number;
+  nc_orders: number;
+  impressions: number;
+  clicks: number;
+}
+
+export async function fetchTripleWhaleAccountDaily(startDate: string, endDate: string): Promise<AccountDay[]> {
+  const raw = await runSql<Record<string, unknown>>(ACCOUNT_DAILY_QUERY, { startDate, endDate });
+  return raw.map((r) => ({
+    date: String(r.event_date ?? "").slice(0, 10),
+    spend: num(r.total_spend),
+    revenue: num(r.revenue),
+    nc_revenue: num(r.nc_revenue),
+    purchases: num(r.purchases),
+    nc_orders: num(r.nc_orders),
+    impressions: num(r.total_impressions),
+    clicks: num(r.total_clicks),
+  }));
 }
 
 // Which provider a sync should use. Triple Whale wins when configured: it

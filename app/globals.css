@@ -66,3 +66,6 @@ body {
 .column-scroll::-webkit-scrollbar-thumb:hover {
   background-color: var(--text-muted);
 }
+/* ---- Ask the dashboard: spinner for the "working" line ---- */
+@keyframes ask-spin { to { transform: rotate(360deg); } }
+.ask-spin { animation: ask-spin 0.9s linear infinite; }
