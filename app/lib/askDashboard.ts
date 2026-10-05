@@ -1,13 +1,17 @@
 // Server-only: "Ask the dashboard" — Opus 5.5 answering questions about the
-// pipeline and its performance through read-only tools.
+// pipeline and its performance through tools.
 //
 // Every number the model quotes has to come out of a tool here. The tools
-// read the ads table (service role) and Triple Whale; none of them write.
+// read the ads table (service role) and Triple Whale. The one tool that
+// writes, propose_changes, goes through askEdits.ts: the user's own
+// permissions, the pipeline gates, and an approval card unless they turned
+// confirmation off.
 // Performance uses the same path as the monthly learnings report — Triple
 // Whale per-ad rows → matchInsights() → summed per brief — so a figure in a
 // chat answer reconciles with the report for the same window.
 
 import Anthropic from "@anthropic-ai/sdk";
+import type { BetaToolResultContentBlockParam } from "@anthropic-ai/sdk/resources/beta/messages/index";
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -20,6 +24,9 @@ import {
 } from "@/app/lib/tripleWhale";
 import { loadThresholds, yesterday } from "@/app/lib/monthlyLearningsRun";
 import { createdMonth } from "@/app/lib/adDates";
+import { randomUUID } from "node:crypto";
+import { applyChanges, validateChanges, EDITABLE_FIELDS, type ChangeItem, type EditUser } from "@/app/lib/askEdits";
+import { can } from "@/app/lib/permissions";
 
 export const ASK_MODEL = "claude-opus-5-5";
 const ALL_TIME_DAYS = 730; // same cap as the sync's "maximum"
@@ -27,8 +34,17 @@ const MAX_ITERATIONS = 14;
 
 export type AskEvent =
   | { type: "tool"; label: string }
-  | { type: "answer"; text: string; usage: AskUsage }
+  | { type: "proposal"; id: string; summary: string; items: ChangeItem[]; errors: string[] }
+  | { type: "applied"; id: string; summary: string; items: ChangeItem[]; errors: string[] }
+  | { type: "answer"; text: string; usage: AskUsage; images: string[] }
   | { type: "error"; error: string };
+
+export interface AskOptions {
+  user: EditUser & { email: string };
+  // The user ticked "skip confirmation": proposals are applied as soon as
+  // they validate. Same validator, same permissions.
+  autoApprove: boolean;
+}
 
 export interface AskUsage {
   input_tokens: number;
@@ -71,6 +87,12 @@ interface WindowData {
 
 interface Ctx {
   admin: SupabaseClient;
+  user: AskOptions["user"];
+  autoApprove: boolean;
+  emit: (e: AskEvent) => void;
+  // Every image URL a tool handed the model. The page renders only these, so
+  // a made-up URL in an answer shows as text, not as a broken or foreign image.
+  images: Set<string>;
   ads: Ad[];
   asOf: string;
   rule: { minSpend: number; ncTarget: number };
@@ -156,6 +178,8 @@ function perfOut(ctx: Ctx, p: BriefPerf | undefined) {
 }
 
 function briefOut(ctx: Ctx, ad: Ad, p: BriefPerf | undefined) {
+  const thumb = p?.metas.slice().sort((a, b) => b.spend - a.spend).find((m) => m.image_url)?.image_url ?? ad.meta_ad_image_url;
+  if (thumb) ctx.images.add(thumb);
   return {
     dtc: ad.dtc_number,
     name: ad.ad_name || "(untitled)",
@@ -174,6 +198,7 @@ function briefOut(ctx: Ctx, ad: Ad, p: BriefPerf | undefined) {
     created: ad.created_at.slice(0, 10),
     result: ad.result,
     has_learning: !!ad.learning?.trim(),
+    thumbnail: thumb ?? null,
     perf: perfOut(ctx, p),
   };
 }
@@ -356,8 +381,11 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
               .slice()
               .sort((a, b) => b.spend - a.spend)
               .slice(0, input.creatives_limit ?? 25)
-              .map((m) => ({
+              .map((m) => {
+                if (m.image_url) ctx.images.add(m.image_url);
+                return {
                 ad_name: m.ad_name,
+                thumbnail: m.image_url,
                 adset_name: m.adset_name,
                 variant: extractDtcVariant(m.ad_name) ?? extractDtcVariant(m.adset_name),
                 first_spend_in_window: m.first_spend,
@@ -366,7 +394,8 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
                 roas: r2(ratio(m.revenue, m.spend)),
                 cpa: r2(ratio(m.spend, m.purchases)),
                 ctr_pct: r2(m.impressions > 0 ? (m.clicks / m.impressions) * 100 : null),
-              })),
+                };
+              }),
           };
         }),
       });
@@ -544,12 +573,138 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
     },
   });
 
-  return [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues];
+  const viewCreatives = betaZodTool({
+    name: "view_creatives",
+    description:
+      "Look at the actual ad creatives (thumbnail images) behind one or more briefs, highest spend first, each labelled with its spend and NC ROAS. " +
+      "Use it for visual questions: what winning statics have in common, how two briefs differ, what a hook looks like. Video ads show their cover frame only.",
+    inputSchema: z.object({
+      dtc_numbers: z.array(z.number().int()).min(1).max(6),
+      per_brief: z.number().int().min(1).max(4).optional().describe("Creatives per brief, default 2."),
+      ...WindowShape,
+    }),
+    run: async (input) => {
+      const w = resolveWindow(ctx, input.start, input.end);
+      onCall(`Looking at creatives for ${input.dtc_numbers.map((n) => `DTC #${n}`).join(", ")}`);
+      const data = await windowData(ctx, w.start, w.end);
+      const blocks: BetaToolResultContentBlockParam[] = [];
+      let shown = 0;
+      for (const dtc of input.dtc_numbers) {
+        const ad = ctx.ads.find((a) => a.dtc_number === dtc);
+        if (!ad) {
+          blocks.push({ type: "text", text: `DTC #${dtc}: no such brief.` });
+          continue;
+        }
+        const p = data.byAd.get(ad.id);
+        const seen = new Set<string>();
+        const chosen = (p?.metas ?? [])
+          .filter((m) => m.image_url)
+          .sort((a, b) => b.spend - a.spend)
+          .filter((m) => !seen.has(m.image_url!) && !!seen.add(m.image_url!))
+          .slice(0, input.per_brief ?? 2);
+        const list = chosen.length
+          ? chosen.map((m) => ({ url: m.image_url!, label: `“${m.ad_name}”, spend $${r0(m.spend)}, NC ROAS ${r2(ratio(m.nc_revenue, m.spend)) ?? "n/a"}` }))
+          : ad.meta_ad_image_url
+            ? [{ url: ad.meta_ad_image_url, label: "top creative (from the last sync)" }]
+            : [];
+        if (!list.length) {
+          blocks.push({ type: "text", text: `DTC #${dtc} (${ad.ad_name}): no creative images available.` });
+          continue;
+        }
+        for (const item of list) {
+          if (shown >= 12) break;
+          const img = await fetchImage(item.url);
+          blocks.push({ type: "text", text: `DTC #${dtc} (${ad.ad_name}): ${item.label}. Thumbnail URL: ${item.url}` });
+          if (img) {
+            blocks.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } });
+            ctx.images.add(item.url);
+            shown++;
+          } else {
+            blocks.push({ type: "text", text: "(image couldn't be loaded)" });
+          }
+        }
+      }
+      return blocks;
+    },
+  });
+
+  const FIELD_NAMES = Object.keys(EDITABLE_FIELDS) as [string, ...string[]];
+  const proposeChanges = betaZodTool({
+    name: "propose_changes",
+    description:
+      "Change fields on one or more brief cards: tags, assignments, priority, due date, links, notes, stage moves, close-out result/learning/numbers. " +
+      "The user sees a before → after card and must approve it (unless they turned confirmation off). Every change is checked against the user's role and the pipeline gates, exactly like the ad card. " +
+      "Cannot delete or create cards. Put all related changes in one call.",
+    inputSchema: z.object({
+      summary: z.string().describe("One short line describing the change, shown on the approval card."),
+      changes: z
+        .array(
+          z.object({
+            dtc_number: z.number().int(),
+            field: z.enum(FIELD_NAMES),
+            value: z.union([z.string(), z.number(), z.null()]).describe("New value; null clears the field. Use exact list values (check list_tag_values when unsure)."),
+          })
+        )
+        .min(1)
+        .max(100),
+    }),
+    run: async (input) => {
+      onCall(`Preparing ${input.changes.length} change${input.changes.length === 1 ? "" : "s"}`);
+      const v = await validateChanges(ctx.admin, ctx.user, input.changes);
+      if (!v.items.length) {
+        return JSON.stringify({ status: "rejected", errors: v.errors.length ? v.errors : ["Nothing to change: every field already has that value."] });
+      }
+      const id = randomUUID();
+      if (ctx.autoApprove) {
+        const res = await applyChanges(
+          ctx.admin,
+          ctx.user,
+          v.items.map((it) => ({ ad_id: it.ad_id, field: it.field, value: it.to, expected: it.from }))
+        );
+        ctx.emit({ type: "applied", id, summary: input.summary, items: res.applied ? res.items : [], errors: [...v.errors, ...res.errors] });
+        return JSON.stringify({
+          status: res.applied ? "applied" : "failed",
+          note: "The user has confirmation turned off, so these were written immediately. They can undo from the card.",
+          applied: res.applied ? res.items.length : 0,
+          skipped: v.errors,
+          errors: res.errors,
+        });
+      }
+      ctx.emit({ type: "proposal", id, summary: input.summary, items: v.items, errors: v.errors });
+      return JSON.stringify({
+        status: "awaiting_approval",
+        note: "Shown to the user as an approval card. NOTHING has been changed yet. Tell them to review and approve it; do not say it's done.",
+        proposed: v.items.map((i) => ({ dtc: i.dtc, field: i.field, from: i.from, to: i.to })),
+        skipped: v.errors,
+      });
+    },
+  });
+
+  return [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, proposeChanges];
 }
 
 // ---------------------------------------------------------------------------
 // Progress labels and date helpers
 // ---------------------------------------------------------------------------
+
+// Fetch a thumbnail server-side and hand it to the model as base64, so one
+// dead CDN link costs that image rather than failing the whole request.
+async function fetchImage(
+  url: string
+): Promise<{ data: string; mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp" } | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return null;
+    const type = (res.headers.get("content-type") || "").split(";")[0].trim();
+    const mediaType = (["image/jpeg", "image/png", "image/gif", "image/webp"] as const).find((t) => t === type);
+    if (!mediaType) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > 4_500_000) return null;
+    return { data: buf.toString("base64"), mediaType };
+  } catch {
+    return null;
+  }
+}
 
 function describeFilters(f: Partial<Filters>): string {
   const parts: string[] = [];
@@ -599,7 +754,27 @@ How to answer:
 - Flag thin evidence: a group or ranking resting on 1–2 briefs, or on small spend, is a hint, not a finding. Prefer ranking ratios only among briefs with meaningful spend.
 - Compare against the account baseline (account_trend) when judging whether something is good.
 - Lead with the direct answer in a sentence or two, then the supporting numbers. Use a compact markdown table when comparing three or more rows. Keep it short — strategists read this between tasks.
-- You can only read. If asked to change, move, tag or create something, say it has to be done in the dashboard itself.`;
+
+Changing things:
+- The person asking is ${ctx.user.name ?? ctx.user.email} (role: ${ctx.user.role ?? "none"}). They can change: ${editableFor(ctx.user.role)}. For anything else, tell them which role can.
+- Use propose_changes only when they ask for a change, or clearly agree to one you suggested. Never change things on your own initiative.
+- ${ctx.autoApprove ? "They turned confirmation off for this chat, so valid changes are written immediately. Say exactly what changed." : "Changes go to an approval card first. Nothing changes until they press Approve. Say so, and never claim it's done."}
+- Look up exact values first (list_tag_values, or get_brief for the card's current state). "Me" / "mine" means ${ctx.user.name ?? "the person asking"}.
+- You cannot delete or create cards. Moving into Testing goes through the pre-launch checklist on the card.
+
+Pictures and charts:
+- To show creatives, put markdown images on their own lines: ![DTC #12 top creative](URL). Only use URLs that came back from a tool (the "thumbnail" fields, or view_creatives). Never invent one. Show a few, not dozens.
+- When a chart says more than a table (a trend, or several groups side by side), add one fenced code block with language "chart" holding JSON:
+  {"type": "bar" | "line", "title": "...", "x": ["label", ...], "series": [{"name": "...", "values": [number or null, ...]}], "format": "usd" | "ratio" | "pct" | "number"}
+  One format per chart, so one axis: never mix spend and ROAS in one chart, make two. At most 4 series and 24 x labels. Every value must come from a tool result.
+- You can look at creatives with view_creatives and describe what you see, but you can't create or edit images.`;
+}
+
+function editableFor(role: string | null): string {
+  const labels = Object.values(EDITABLE_FIELDS)
+    .filter((spec) => can(role, spec.action))
+    .map((spec) => spec.label.toLowerCase());
+  return labels.length ? labels.join(", ") : "nothing (their role is read-only here)";
 }
 
 // ---------------------------------------------------------------------------
@@ -613,12 +788,23 @@ const PRICE = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 };
 export async function askDashboard(
   admin: SupabaseClient,
   history: ChatTurn[],
-  emit: (e: AskEvent) => void
+  emit: (e: AskEvent) => void,
+  opts: AskOptions
 ): Promise<void> {
   const [{ data: ads, error }, rule] = await Promise.all([admin.from("ads").select("*"), loadThresholds(admin)]);
   if (error) throw new Error(`Couldn't load ads: ${error.message}`);
 
-  const ctx: Ctx = { admin, ads: (ads ?? []) as Ad[], asOf: yesterday(), rule, windows: new Map() };
+  const ctx: Ctx = {
+    admin,
+    user: opts.user,
+    autoApprove: opts.autoApprove,
+    emit,
+    images: new Set(),
+    ads: (ads ?? []) as Ad[],
+    asOf: yesterday(),
+    rule,
+    windows: new Map(),
+  };
   let toolCalls = 0;
   const tools = buildTools(ctx, (label) => {
     toolCalls++;
@@ -674,5 +860,10 @@ export async function askDashboard(
       usage.cache_creation_input_tokens * PRICE.cacheWrite) /
     1_000_000;
 
-  emit({ type: "answer", text, usage: { ...usage, cost_usd: Math.round(cost * 1000) / 1000, tool_calls: toolCalls } });
+  emit({
+    type: "answer",
+    text,
+    usage: { ...usage, cost_usd: Math.round(cost * 1000) / 1000, tool_calls: toolCalls },
+    images: [...ctx.images],
+  });
 }

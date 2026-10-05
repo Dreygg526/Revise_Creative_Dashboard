@@ -3,8 +3,9 @@ import { activeProvider } from "@/app/lib/tripleWhale";
 import { askDashboard, type AskEvent, type ChatTurn } from "@/app/lib/askDashboard";
 
 // "Ask the dashboard". Streams newline-delimited JSON events so the page can
-// show each lookup as it happens: {type:"tool"} lines, then one {type:"answer"}
-// or {type:"error"}. Read-only — every tool behind it only reads.
+// show each lookup as it happens: {type:"tool"} lines, {type:"proposal"} /
+// {type:"applied"} when Claude changes something, then one {type:"answer"} or
+// {type:"error"}. Edits go through askEdits.ts with the caller's own role.
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
@@ -20,8 +21,8 @@ export async function POST(req: Request) {
   const admin = serviceClient();
   if (!admin) return jsonError("Server is missing the service role key.", 500);
 
-  // Any signed-in member. It reads what the Analytics and Learnings views
-  // already show everyone, and costs one Claude run per question.
+  // Any signed-in member. Reads cover what Analytics and Learnings already
+  // show everyone; any edit is checked against the caller's role in askEdits.
   const auth = await requireMember(req, admin, null);
   if (!auth.ok) return jsonError(auth.error, auth.status);
 
@@ -50,12 +51,16 @@ export async function POST(req: Request) {
     return jsonError(`Keep the question under ${MAX_QUESTION_CHARS} characters.`, 400);
   }
 
+  const autoApprove = body?.auto_approve === true;
+  const { data: me } = await admin.from("team_members").select("name").eq("email", auth.email).maybeSingle();
+  const user = { email: auth.email, role: auth.role, name: (me?.name as string | undefined) ?? null };
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const emit = (e: AskEvent) => controller.enqueue(encoder.encode(JSON.stringify(e) + "\n"));
       try {
-        await askDashboard(admin, history, emit);
+        await askDashboard(admin, history, emit, { user, autoApprove });
       } catch (e) {
         emit({ type: "error", error: e instanceof Error ? e.message : "Something went wrong." });
       } finally {

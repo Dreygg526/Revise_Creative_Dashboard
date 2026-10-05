@@ -290,6 +290,7 @@ const LIFETIME_QUERY = `
     any(adset_name)       AS adset_name,
     any(campaign_name)    AS campaign_name,
     any(account_id)       AS account_id,
+    any(ad_image_url)     AS image_url,
     minIf(event_date, spend > 0)    AS first_spend,
     SUM(spend)                      AS total_spend,
     SUM(orders_quantity)            AS purchases,
@@ -319,6 +320,7 @@ export interface LifetimeAdRow extends MetaInsightRow {
   first_spend: string;   // YYYY-MM-DD
   nc_revenue: number;
   nc_orders: number;
+  image_url: string | null;   // Triple Whale's own CDN copy of the creative thumbnail
 }
 
 export async function fetchTripleWhaleLifetimeAds(endDate: string): Promise<LifetimeAdRow[]> {
@@ -348,6 +350,7 @@ export async function fetchTripleWhaleAdsInRange(startDate: string, endDate: str
       first_spend: String(r.first_spend).slice(0, 10),
       nc_revenue: num(r.nc_revenue),
       nc_orders: num(r.nc_orders),
+      image_url: r.image_url ? String(r.image_url) : null,
     });
   }
   return out;

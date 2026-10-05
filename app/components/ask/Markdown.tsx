@@ -1,10 +1,12 @@
 "use client";
 
 import { Fragment, type ReactNode } from "react";
+import Chart, { parseChart } from "@/app/components/ask/Chart";
 
 // Just enough markdown for chat answers: paragraphs, headings, bullet and
-// numbered lists, tables, **bold**, _italic_ / *italic*, `code`. Anything
-// else renders as plain text. "DTC #123" becomes a link when onDtc is given.
+// numbered lists, tables, **bold**, _italic_ / *italic*, `code`, image lines
+// (creative thumbnails) and ```chart blocks. Anything else renders as plain
+// text. "DTC #123" becomes a link when onDtc is given.
 
 type OnDtc = ((dtc: number) => void) | undefined;
 
@@ -52,8 +54,11 @@ const isTableRow = (l: string) => /^\s*\|.*\|\s*$/.test(l);
 const isDivider = (l: string) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l);
 const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
 
-export default function Markdown({ text, onDtc }: { text: string; onDtc?: (dtc: number) => void }) {
+const IMAGE_LINE = /^\s*!\[([^\]]*)\]\((\S+?)\)\s*$/;
+
+export default function Markdown({ text, onDtc, images }: { text: string; onDtc?: (dtc: number) => void; images?: string[] }) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const allowed = new Set(images ?? []);
   const blocks: ReactNode[] = [];
   let i = 0;
   let k = 0;
@@ -62,6 +67,52 @@ export default function Markdown({ text, onDtc }: { text: string; onDtc?: (dtc: 
     const line = lines[i];
     if (!line.trim()) { i++; continue; }
     const key = `b${k++}`;
+
+    // Fenced block: ```chart draws a chart, anything else shows as code.
+    const fence = line.match(/^\s*```\s*(\w*)\s*$/);
+    if (fence) {
+      const body: string[] = [];
+      i++;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) body.push(lines[i++]);
+      i++; // closing fence
+      const spec = fence[1] === "chart" ? parseChart(body.join("\n")) : null;
+      blocks.push(
+        spec ? (
+          <Chart key={key} spec={spec} />
+        ) : (
+          <pre key={key} style={{ fontSize: "12px", background: "var(--raised)", padding: "10px 12px", borderRadius: "8px", overflowX: "auto", margin: "4px 0 12px" }}>
+            {body.join("\n")}
+          </pre>
+        )
+      );
+      continue;
+    }
+
+    // Run of image lines → a row of thumbnails. Only URLs a tool returned are
+    // drawn; anything else (a made-up link) is shown as its caption text.
+    if (IMAGE_LINE.test(line)) {
+      const pics: { alt: string; url: string }[] = [];
+      while (i < lines.length && (IMAGE_LINE.test(lines[i]) || (!lines[i].trim() && i + 1 < lines.length && IMAGE_LINE.test(lines[i + 1])))) {
+        const m = lines[i++].match(IMAGE_LINE);
+        if (m) pics.push({ alt: m[1], url: m[2] });
+      }
+      blocks.push(
+        <div key={key} style={{ display: "flex", flexWrap: "wrap", gap: "10px", margin: "4px 0 14px" }}>
+          {pics.map((p, n) =>
+            allowed.has(p.url) ? (
+              <a key={n} href={p.url} target="_blank" rel="noreferrer" title={p.alt} style={{ display: "block", width: "168px", textDecoration: "none" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element -- external CDN thumbnails, not worth next/image config */}
+                <img src={p.url} alt={p.alt} loading="lazy" style={{ width: "168px", height: "210px", objectFit: "cover", borderRadius: "8px", border: "1px solid var(--border)", display: "block", background: "var(--raised)" }} />
+                <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", lineHeight: 1.35 }}>{inline(p.alt, onDtc, `${key}c${n}`)}</div>
+              </a>
+            ) : (
+              <span key={n} style={{ fontSize: "12px", color: "var(--text-muted)" }}>[{p.alt}]</span>
+            )
+          )}
+        </div>
+      );
+      continue;
+    }
 
     // Table: header row, divider, body rows.
     if (isTableRow(line) && i + 1 < lines.length && isDivider(lines[i + 1])) {
@@ -133,7 +184,7 @@ export default function Markdown({ text, onDtc }: { text: string; onDtc?: (dtc: 
 
     // Paragraph: consecutive plain lines.
     const para: string[] = [];
-    while (i < lines.length && lines[i].trim() && !isTableRow(lines[i]) && !/^(#{1,4})\s/.test(lines[i]) && !bullet.test(lines[i]) && !numbered.test(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !isTableRow(lines[i]) && !/^(#{1,4})\s/.test(lines[i]) && !bullet.test(lines[i]) && !numbered.test(lines[i]) && !IMAGE_LINE.test(lines[i]) && !/^\s*```/.test(lines[i])) {
       para.push(lines[i++].trim());
     }
     blocks.push(

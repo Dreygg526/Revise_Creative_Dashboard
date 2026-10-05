@@ -12,15 +12,62 @@ import type { Ad } from "@/app/types";
 // answered by /api/ask. The conversation lives in sessionStorage so switching
 // views and coming back doesn't lose it; "New chat" clears it.
 
+type FieldValue = string | number | null;
+
+interface ChangeItem {
+  ad_id: string;
+  dtc: number | null;
+  name: string;
+  field: string;
+  label: string;
+  from: FieldValue;
+  to: FieldValue;
+}
+
+// One batch of edits Claude proposed. "pending" waits on Approve; with
+// confirmation off it arrives already "applied". Undo writes `from` back.
+interface ChangeCard {
+  id: string;
+  summary: string;
+  items: ChangeItem[];
+  skipped: string[];                        // changes the validator refused
+  status: "pending" | "applying" | "applied" | "cancelled" | "undone" | "failed";
+  message?: string;
+}
+
 interface Turn {
   role: "user" | "assistant";
   content: string;
   steps?: string[];                         // the lookups behind an answer
   meta?: { tool_calls: number; cost_usd: number; seconds: number };
+  images?: string[];                        // thumbnail URLs the tools returned — the only ones drawn
+  changes?: ChangeCard[];
   error?: boolean;                          // failed turn: shown, never sent back
 }
 
 const STORE_KEY = "ask-dashboard-chat";
+const AUTO_KEY = "ask-dashboard-skip-confirm";
+
+// What Claude sees of an earlier answer's change cards on the next question,
+// so "did that go through?" and "undo that" have something to go on.
+function changeNote(cards: ChangeCard[] | undefined): string {
+  if (!cards?.length) return "";
+  const word: Record<ChangeCard["status"], string> = {
+    pending: "not reviewed yet (nothing changed)",
+    applying: "being applied",
+    applied: "approved and applied",
+    cancelled: "cancelled by the user (nothing changed)",
+    undone: "applied, then undone by the user",
+    failed: "failed to apply (nothing changed)",
+  };
+  return (
+    "\n\n[Change cards on this answer: " +
+    cards.map((c) => `"${c.summary}" (${c.items.length} change${c.items.length === 1 ? "" : "s"}): ${word[c.status]}`).join("; ") +
+    "]"
+  );
+}
+
+const show = (v: FieldValue) => (v == null || v === "" ? "empty" : String(v));
 
 // Event-handler timing only; kept out of the component so the purity lint
 // rule doesn't read it as a render-time call.
@@ -46,9 +93,25 @@ function loadTurns(): Turn[] {
   }
 }
 
+function loadAuto(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.sessionStorage.getItem(AUTO_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+async function authHeaders() {
+  const { data } = await supabase.auth.getSession();
+  return { "Content-Type": "application/json", Authorization: `Bearer ${data.session?.access_token ?? ""}` };
+}
+
 export default function AskView() {
-  const { ads, updateAd, deleteAd } = useAds();
+  const { ads, updateAd, deleteAd, fetchAds } = useAds();
   const [turns, setTurns] = useState<Turn[]>(loadTurns);
+  // "Skip confirmation" lasts for this chat only; New chat turns it back on.
+  const [autoApprove, setAutoApprove] = useState<boolean>(loadAuto);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
@@ -65,6 +128,14 @@ export default function AskView() {
       /* private window or storage full — the chat still works, it just won't survive a view switch */
     }
   }, [turns]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(AUTO_KEY, autoApprove ? "1" : "0");
+    } catch {
+      /* same as above */
+    }
+  }, [autoApprove]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -92,7 +163,7 @@ export default function AskView() {
     for (let i = 0; i + 1 < turns.length; i += 1) {
       const a = turns[i], b = turns[i + 1];
       if (a.role === "user" && b.role === "assistant" && !b.error) {
-        history.push({ role: "user", content: a.content }, { role: "assistant", content: b.content });
+        history.push({ role: "user", content: a.content }, { role: "assistant", content: b.content + changeNote(b.changes) });
         i += 1;
       }
     }
@@ -106,9 +177,11 @@ export default function AskView() {
     const controller = new AbortController();
     abortRef.current = controller;
     const collected: string[] = [];
+    const cards: ChangeCard[] = [];
 
     const finish = (turn: Turn) => {
-      setTurns((t) => [...t, { ...turn, steps: collected }]);
+      setTurns((t) => [...t, { ...turn, steps: collected, changes: cards.length ? cards : undefined }]);
+      if (cards.some((c) => c.status === "applied")) fetchAds();
       setSteps([]);
       setBusy(false);
       abortRef.current = null;
@@ -116,12 +189,10 @@ export default function AskView() {
     };
 
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
       const res = await fetch("/api/ask", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
-        body: JSON.stringify({ messages: history }),
+        headers: await authHeaders(),
+        body: JSON.stringify({ messages: history, auto_approve: autoApprove }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) {
@@ -145,10 +216,20 @@ export default function AskView() {
           if (e.type === "tool") {
             collected.push(e.label);
             setSteps([...collected]);
+          } else if (e.type === "proposal" || e.type === "applied") {
+            cards.push({
+              id: e.id,
+              summary: e.summary,
+              items: e.items,
+              skipped: e.errors ?? [],
+              // An "applied" event carries items only when the write succeeded.
+              status: e.type === "proposal" ? "pending" : e.items.length ? "applied" : "failed",
+            });
           } else if (e.type === "answer") {
             finish({
               role: "assistant",
               content: e.text,
+              images: e.images,
               meta: { tool_calls: e.usage.tool_calls, cost_usd: e.usage.cost_usd, seconds: secondsSince(started) },
             });
             return;
@@ -168,8 +249,44 @@ export default function AskView() {
     }
   }
 
+  function setCard(turnIndex: number, cardId: string, patch: Partial<ChangeCard>) {
+    setTurns((ts) =>
+      ts.map((t, i) => (i !== turnIndex ? t : { ...t, changes: t.changes?.map((c) => (c.id === cardId ? { ...c, ...patch } : c)) }))
+    );
+  }
+
+  // Approve writes `to` over `from`; Undo writes `from` back over `to`. Both
+  // re-validate on the server against the card's current values.
+  async function runCard(turnIndex: number, card: ChangeCard, direction: "apply" | "undo") {
+    setCard(turnIndex, card.id, { status: "applying", message: undefined });
+    try {
+      const res = await fetch("/api/ask/apply", {
+        method: "POST",
+        headers: await authHeaders(),
+        body: JSON.stringify({
+          changes: card.items.map((it) =>
+            direction === "apply"
+              ? { ad_id: it.ad_id, field: it.field, value: it.to, expected: it.from }
+              : { ad_id: it.ad_id, field: it.field, value: it.from, expected: it.to }
+          ),
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.applied) {
+        const msg = (body.errors ?? []).join(" ") || body.error || `Request failed (${res.status}).`;
+        setCard(turnIndex, card.id, { status: direction === "apply" ? "pending" : "applied", message: msg });
+        return;
+      }
+      setCard(turnIndex, card.id, { status: direction === "apply" ? "applied" : "undone", message: undefined });
+      fetchAds();
+    } catch (e) {
+      setCard(turnIndex, card.id, { status: direction === "apply" ? "pending" : "applied", message: e instanceof Error ? e.message : "Couldn't reach the server." });
+    }
+  }
+
   function newChat() {
     abortRef.current?.abort();
+    setAutoApprove(false);
     setTurns([]);
     setSteps([]);
     setInput("");
@@ -185,7 +302,7 @@ export default function AskView() {
         <div>
           <h1 style={{ fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>Ask the dashboard</h1>
           <p style={{ color: "var(--text-secondary)", marginTop: "4px", fontSize: "14px" }}>
-            Questions about briefs, tags and Meta performance, answered from live data. Read-only.
+            Questions about briefs, tags and Meta performance, answered from live data. It can also make changes for you, after you approve them.
           </p>
         </div>
         {turns.length > 0 && (
@@ -238,8 +355,22 @@ export default function AskView() {
                   {t.content}
                 </div>
               ) : (
-                <Markdown text={t.content} onDtc={openDtc} />
+                <Markdown text={t.content} onDtc={openDtc} images={t.images} />
               )}
+              {t.changes?.map((c) => (
+                <ChangeCardView
+                  key={c.id}
+                  card={c}
+                  autoApprove={autoApprove}
+                  onApprove={(skipNext) => {
+                    if (skipNext) setAutoApprove(true);
+                    runCard(i, c, "apply");
+                  }}
+                  onCancel={() => setCard(i, c.id, { status: "cancelled", message: undefined })}
+                  onUndo={() => runCard(i, c, "undo")}
+                  onDtc={openDtc}
+                />
+              ))}
               {t.meta && (
                 <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
                   {t.meta.tool_calls} lookup{t.meta.tool_calls === 1 ? "" : "s"} · {t.meta.seconds}s · ~${t.meta.cost_usd.toFixed(2)}
@@ -302,6 +433,18 @@ export default function AskView() {
         </div>
         <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "6px", textAlign: "center" }}>
           Enter to send · Shift+Enter for a new line · Click any DTC # to open the brief
+          {autoApprove && (
+            <>
+              {" · "}
+              <span style={{ color: "#fbbf24" }}>Changes apply without asking in this chat</span>{" "}
+              <button
+                onClick={() => setAutoApprove(false)}
+                style={{ background: "none", border: "none", padding: 0, color: "var(--text-secondary)", textDecoration: "underline", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}
+              >
+                ask me again
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -313,6 +456,91 @@ export default function AskView() {
           onSave={async (id, fields) => { await updateAd(id, fields); }}
           onDelete={async (id) => { await deleteAd(id); setOpenAdId(null); }}
         />
+      )}
+    </div>
+  );
+}
+
+function ChangeCardView({
+  card, autoApprove, onApprove, onCancel, onUndo, onDtc,
+}: {
+  card: ChangeCard;
+  autoApprove: boolean;
+  onApprove: (skipNext: boolean) => void;
+  onCancel: () => void;
+  onUndo: () => void;
+  onDtc: (dtc: number) => void;
+}) {
+  const [skipNext, setSkipNext] = useState(false);
+  const pending = card.status === "pending";
+  const badge: Record<ChangeCard["status"], { text: string; color: string }> = {
+    pending: { text: "Waiting for your approval", color: "#fbbf24" },
+    applying: { text: "Saving…", color: "var(--text-secondary)" },
+    applied: { text: "Applied", color: "#4ade80" },
+    cancelled: { text: "Cancelled. Nothing changed", color: "var(--text-muted)" },
+    undone: { text: "Undone", color: "var(--text-muted)" },
+    failed: { text: "Not applied", color: "#fca5a5" },
+  };
+  const b = badge[card.status];
+  const btn = (primary: boolean): React.CSSProperties => ({
+    padding: "6px 14px", borderRadius: "6px", fontSize: "13px", fontWeight: primary ? 600 : 400, cursor: "pointer", fontFamily: "inherit",
+    border: primary ? "none" : "1px solid var(--border)",
+    background: primary ? "var(--accent)" : "transparent",
+    color: primary ? "#0d0d0f" : "var(--text-secondary)",
+  });
+
+  return (
+    <div style={{ border: `1px solid ${pending ? "#a16207" : "var(--border)"}`, borderRadius: "10px", background: "var(--card)", padding: "12px 14px", margin: "4px 0 10px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "12px", marginBottom: "8px" }}>
+        <div style={{ fontSize: "13px", fontWeight: 600 }}>{card.summary}</div>
+        <div style={{ fontSize: "11px", color: b.color, whiteSpace: "nowrap" }}>{b.text}</div>
+      </div>
+
+      {card.items.length > 0 && (
+        <table style={{ borderCollapse: "collapse", fontSize: "13px" }}>
+          <tbody>
+            {card.items.map((it, n) => (
+              <tr key={n}>
+                <td style={{ padding: "4px 8px 4px 0", whiteSpace: "nowrap", verticalAlign: "top" }}>
+                  {it.dtc != null ? (
+                    <button onClick={() => onDtc(it.dtc!)} style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "#7cb4ff", cursor: "pointer" }}>DTC #{it.dtc}</button>
+                  ) : it.name}
+                </td>
+                <td style={{ padding: "4px 8px", color: "var(--text-secondary)", whiteSpace: "nowrap", verticalAlign: "top" }}>{it.label}</td>
+                <td style={{ padding: "4px 0 4px 8px", verticalAlign: "top" }}>
+                  <span style={{ color: "var(--text-muted)", textDecoration: card.status === "applied" ? "line-through" : "none" }}>{show(it.from)}</span>
+                  <span style={{ color: "var(--text-muted)" }}> → </span>
+                  <span style={{ color: "var(--text)" }}>{show(it.to)}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {card.skipped.length > 0 && (
+        <div style={{ fontSize: "12px", color: "#fca5a5", marginTop: "8px", lineHeight: 1.5 }}>
+          {card.status === "failed" ? "" : "Left out: "}{card.skipped.join(" ")}
+        </div>
+      )}
+      {card.message && <div style={{ fontSize: "12px", color: "#fca5a5", marginTop: "8px", lineHeight: 1.5 }}>{card.message}</div>}
+
+      {pending && (
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
+          <button onClick={() => onApprove(skipNext)} style={btn(true)}>Approve {card.items.length > 1 ? `${card.items.length} changes` : "change"}</button>
+          <button onClick={onCancel} style={btn(false)}>Cancel</button>
+          {!autoApprove && (
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-secondary)", marginLeft: "6px", cursor: "pointer" }}>
+              <input type="checkbox" checked={skipNext} onChange={(e) => setSkipNext(e.target.checked)} />
+              Don’t ask again in this chat
+            </label>
+          )}
+        </div>
+      )}
+      {card.status === "applied" && (
+        <div style={{ marginTop: "10px" }}>
+          <button onClick={onUndo} style={{ ...btn(false), padding: "4px 12px", fontSize: "12px" }}>Undo</button>
+        </div>
       )}
     </div>
   );
