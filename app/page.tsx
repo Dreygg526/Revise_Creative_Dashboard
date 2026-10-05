@@ -105,6 +105,13 @@ export default function Home() {
           display: "flex",
           flexDirection: "column",
           padding: "20px 12px",
+          // Pinned: the window scrolls (long chats, long boards), the sidebar
+          // stays put at full height. The chat list scrolls inside it.
+          position: "sticky",
+          top: 0,
+          height: "100vh",
+          alignSelf: "flex-start",
+          boxSizing: "border-box",
         }}
       >
         {/* App name */}

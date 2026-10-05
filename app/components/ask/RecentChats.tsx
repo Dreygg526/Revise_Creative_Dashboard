@@ -12,7 +12,8 @@ export default function RecentChats({ onOpen, activeHome }: { onOpen: () => void
   const list = showAll ? chats : chats.slice(0, 8);
 
   return (
-    <div style={{ marginTop: "18px", display: "flex", flexDirection: "column", minHeight: 0 }}>
+    // Shrinks to fit the pinned sidebar; the list below scrolls on its own.
+    <div style={{ marginTop: "18px", display: "flex", flexDirection: "column", minHeight: 0, flex: "0 1 auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 12px 6px" }}>
         <span style={{ fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>Chats</span>
         <button
