@@ -69,3 +69,8 @@ body {
 /* ---- Ask the dashboard: spinner for the "working" line ---- */
 @keyframes ask-spin { to { transform: rotate(360deg); } }
 .ask-spin { animation: ask-spin 0.9s linear infinite; }
+
+/* ---- Sidebar chat list: delete button only on hover ---- */
+.ask-chat-row .ask-chat-delete { opacity: 0; transition: opacity 0.12s; }
+.ask-chat-row:hover .ask-chat-delete { opacity: 1; }
+.ask-chat-row:hover { background-color: var(--hover); }

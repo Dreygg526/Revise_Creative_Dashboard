@@ -55,9 +55,31 @@ export interface AskUsage {
   tool_calls: number;
 }
 
+// A file the user attached to a question: a screenshot, a competitor's ad, a
+// PDF brief. Base64, already downscaled in the browser (Vercel caps a request
+// body at 4.5MB, so the page keeps the total under ~3.5MB).
+export interface ChatAttachment {
+  name: string;
+  media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "application/pdf";
+  data: string;
+}
+
 export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
+  attachments?: ChatAttachment[];   // user turns only
+}
+
+function turnContent(t: ChatTurn): Anthropic.Beta.BetaMessageParam["content"] {
+  if (t.role !== "user" || !t.attachments?.length) return t.content;
+  const blocks: Anthropic.Beta.BetaContentBlockParam[] = t.attachments.map((a) =>
+    a.media_type === "application/pdf"
+      ? { type: "document", title: a.name, source: { type: "base64", media_type: "application/pdf", data: a.data } }
+      : { type: "image", source: { type: "base64", media_type: a.media_type, data: a.data } }
+  );
+  const names = t.attachments.map((a) => a.name).join(", ");
+  blocks.push({ type: "text", text: `${t.content}\n\n(Attached by the user: ${names})` });
+  return blocks;
 }
 
 // ---------------------------------------------------------------------------
@@ -831,6 +853,7 @@ How the data works — you need this to read the numbers correctly:
 - NC ROAS = new-customer revenue ÷ spend. It is the team's headline metric. ROAS = all revenue ÷ spend. Both are margin-blind.
 - Two attributions exist for the same ads. The default numbers (roas, nc_roas, purchases) are Triple Whale's pixel. meta_reported_roas / meta_reported_purchases are Meta's own attribution: what Ads Manager and Triple Whale's Moby show. Spend and impressions are identical in both; purchases and revenue differ, usually with the pixel finding more. When the user compares with Ads Manager or Moby, or asks about "Meta's numbers", lead with the Meta-reported figures and show the pixel ones beside them.
 - Scope matters as much as attribution. A brief sums every Meta ad under it; one Meta ad is a single creative. If the user gives an ad ID or a creative name, use get_meta_ad and answer for that ad, then say which brief it belongs to and how the brief did overall. Always say which scope, which dates and which attribution a number is.
+- The user can attach images (screenshots, creatives, competitors' ads) and PDFs (briefs, reports) to a question. Look at them directly. An attached ad is not necessarily one of ours: only treat it as ours if it carries a DTC number or the user says so, and compare it against our data with the tools when that helps.
 - Links: when you mention a specific Meta ad, you may link it as [Open in Ads Manager](ads_manager_url), using only an ads_manager_url a tool returned.
 - The team's rule: a brief is a Winner when it spent at least $${ctx.rule.minSpend} and reached NC ROAS ${ctx.rule.ncTarget}; Loser if it spent that much but fell short; "Too early" below $${ctx.rule.minSpend}. Tools return this as verdict_by_rule for the window you ask about. The stored "result" field on cards is almost never filled in — rely on verdict_by_rule.
 - "All time" means roughly the last two years. A window counts only spend inside it, so a brief launched in June looks small in a September window.
@@ -915,7 +938,7 @@ export async function askDashboard(
     cache_control: { type: "ephemeral" },
     system: systemPrompt(ctx),
     tools,
-    messages: history.map((t) => ({ role: t.role, content: t.content })),
+    messages: history.map((t) => ({ role: t.role, content: turnContent(t) })),
     max_iterations: MAX_ITERATIONS,
   });
 

@@ -1,47 +1,33 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { MessageCircle, X } from "lucide-react";
 import AskPanel from "@/app/components/ask/AskPanel";
+import { useAskChat } from "@/app/components/ask/AskChatProvider";
 
-// The floating "Ask the dashboard" bubble, bottom-right on every view.
-// The panel (and the ads fetch inside it) isn't mounted until the first
-// open, so people who never use the chat don't pay for it on page load.
-// Layer 40 keeps it under the ad card (50) and its sub-modals (60), so a
-// brief opened from the chat appears on top of it.
-export default function AskWidget() {
+// The floating chat bubble, bottom-right on every view except the Ask AI
+// home (which is the same chat, full size). Layer 40 keeps it under the ad
+// card (50) and its sub-modals (60), so a brief opened from the chat lands on
+// top. A dot marks an answer that arrived while the panel was closed.
+export default function AskWidget({ hidden, onOpenFull }: { hidden: boolean; onOpenFull: () => void }) {
+  const { answerTick } = useAskChat();
   const [open, setOpen] = useState(false);
-  const [everOpened, setEverOpened] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const [unread, setUnread] = useState(false);
-  // An answer can land long after the question was sent, from a callback
-  // created back then; the ref is how it sees whether the panel is open *now*.
-  const openRef = useRef(false);
+  const [seenTick, setSeenTick] = useState(answerTick);
+  const unread = !open && answerTick > seenTick;
 
-  function setPanel(next: boolean) {
-    openRef.current = next;
-    setOpen(next);
-    if (next) {
-      setEverOpened(true);
-      setUnread(false);
-    }
-  }
+  if (hidden) return null;
 
   return (
     <>
-      {everOpened && (
-        <AskPanel
-          open={open}
-          expanded={expanded}
-          onClose={() => setPanel(false)}
-          onToggleExpand={() => setExpanded((e) => !e)}
-          onAnswer={() => { if (!openRef.current) setUnread(true); }}
-        />
-      )}
+      <AskPanel
+        open={open}
+        onClose={() => { setOpen(false); setSeenTick(answerTick); }}
+        onOpenFull={() => { setOpen(false); setSeenTick(answerTick); onOpenFull(); }}
+      />
       <button
-        onClick={() => setPanel(!open)}
-        title={open ? "Close chat" : "Ask the dashboard"}
-        aria-label={open ? "Close chat" : "Ask the dashboard"}
+        onClick={() => { setOpen(!open); setSeenTick(answerTick); }}
+        title={open ? "Close chat" : "Ask AI"}
+        aria-label={open ? "Close chat" : "Ask AI"}
         style={{
           position: "fixed", right: "24px", bottom: "24px", zIndex: 40,
           width: "52px", height: "52px", borderRadius: "50%",
@@ -54,7 +40,7 @@ export default function AskWidget() {
         onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
       >
         {open ? <X size={22} /> : <MessageCircle size={23} strokeWidth={2} />}
-        {unread && !open && (
+        {unread && (
           <span style={{ position: "absolute", top: "2px", right: "2px", width: "12px", height: "12px", borderRadius: "50%", background: "#3987e5", border: "2px solid var(--bg)" }} />
         )}
       </button>

@@ -11,6 +11,7 @@ import {
   PenLine,
   Settings as SettingsIcon,
   LogOut,
+  Sparkles,
 } from "lucide-react";
 import { useAuth } from "@/app/hooks/useAuth";
 import LoginPage from "@/app/components/LoginPage";
@@ -27,10 +28,14 @@ import LearningsView from "@/app/components/views/LearningsView";
 import ReportsView from "@/app/components/views/ReportsView";
 import SettingsView from "@/app/components/views/SettingsView";
 import AskWidget from "@/app/components/ask/AskWidget";
+import AskChatProvider from "@/app/components/ask/AskChatProvider";
+import AskHome from "@/app/components/ask/AskHome";
+import RecentChats from "@/app/components/ask/RecentChats";
 
 // The five views the dashboard has. `key` is used for routing,
 // `label` is what the user sees, `icon` is the Lucide line-icon.
 const NAV_ITEMS = [
+  { key: "ask", label: "Ask AI", icon: Sparkles },
   { key: "pipeline", label: "Pipeline", icon: LayoutGrid },
   { key: "myqueue", label: "My Queue", icon: ListChecks },
   { key: "analytics", label: "Analytics", icon: BarChart3 },
@@ -46,7 +51,7 @@ type ViewKey = (typeof NAV_ITEMS)[number]["key"];
 export default function Home() {
   const { session, loading, needsPassword, signOut } = useAuth();
   const myRole = useMyRole();
-  const [activeView, setActiveView] = useState<ViewKey>("pipeline");
+  const [activeView, setActiveView] = useState<ViewKey>("ask");
 
   // Auth gate: while checking, show nothing; if not logged in, show login.
   if (loading) {
@@ -66,6 +71,8 @@ export default function Home() {
 
   function renderView() {
     switch (activeView) {
+      case "ask":
+        return <AskHome />;
       case "pipeline":
         return <PipelineView />;
       case "myqueue":
@@ -86,6 +93,7 @@ export default function Home() {
   }
 
   return (
+    <AskChatProvider>
     <div style={{ display: "flex", minHeight: "100vh" }}>
       {/* ---------- SIDEBAR ---------- */}
       <aside
@@ -163,6 +171,9 @@ export default function Home() {
           })}
         </nav>
 
+        {/* Saved conversations, like Moby's Chat History */}
+        <RecentChats onOpen={() => setActiveView("ask")} activeHome={activeView === "ask"} />
+
         {/* Logout pinned to the bottom */}
         <div style={{ marginTop: "auto", paddingTop: "12px" }}>
           <div style={{ padding: "0 12px 8px 12px" }}>
@@ -204,8 +215,10 @@ export default function Home() {
         {renderView()}
       </main>
 
-      {/* Floating "Ask the dashboard" chat, on every view */}
-      <AskWidget />
+      {/* Floating chat bubble on every other view. Same chat as the home view. Re-keyed on leaving it, so answers read
+          there don't show as unread on the bubble. */}
+      <AskWidget key={activeView === "ask" ? "home" : "away"} hidden={activeView === "ask"} onOpenFull={() => setActiveView("ask")} />
     </div>
+    </AskChatProvider>
   );
 }
