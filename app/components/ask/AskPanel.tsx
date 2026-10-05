@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, RotateCcw, Search, Loader2 } from "lucide-react";
+import { ArrowUp, Square, RotateCcw, Search, Loader2, X, Maximize2, Minimize2 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { useAds } from "@/app/hooks/useAds";
 import AdDetailModal from "@/app/components/modals/AdDetailModal";
 import Markdown from "@/app/components/ask/Markdown";
 import type { Ad } from "@/app/types";
 
-// "Ask the dashboard": a chat over the pipeline and its Meta performance,
-// answered by /api/ask. The conversation lives in sessionStorage so switching
-// views and coming back doesn't lose it; "New chat" clears it.
+// "Ask the dashboard": the chat panel that floats above every view, opened
+// from the bubble in AskWidget. Answers come from /api/ask. It stays mounted
+// while closed, so a question keeps running if you close the panel. The
+// conversation also lives in sessionStorage, so a reload doesn't lose it;
+// "New chat" clears it.
 
 type FieldValue = string | number | null;
 
@@ -107,7 +109,15 @@ async function authHeaders() {
   return { "Content-Type": "application/json", Authorization: `Bearer ${data.session?.access_token ?? ""}` };
 }
 
-export default function AskView() {
+export default function AskPanel({
+  open, expanded, onClose, onToggleExpand, onAnswer,
+}: {
+  open: boolean;
+  expanded: boolean;
+  onClose: () => void;
+  onToggleExpand: () => void;
+  onAnswer: () => void;          // an answer landed — the bubble shows a dot if the panel is closed
+}) {
   const { ads, updateAd, deleteAd, fetchAds } = useAds();
   const [turns, setTurns] = useState<Turn[]>(loadTurns);
   // "Skip confirmation" lasts for this chat only; New chat turns it back on.
@@ -118,7 +128,7 @@ export default function AskView() {
   const [openAdId, setOpenAdId] = useState<string | null>(null);
   const [notFound, setNotFound] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -137,9 +147,15 @@ export default function AskView() {
     }
   }, [autoApprove]);
 
+  // Scroll the panel, not the page behind it.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [turns, steps]);
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, [turns, steps, open, expanded]);
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
 
   const openAd: Ad | null = openAdId ? ads.find((a) => a.id === openAdId) ?? null : null;
 
@@ -185,6 +201,7 @@ export default function AskView() {
       setSteps([]);
       setBusy(false);
       abortRef.current = null;
+      onAnswer();
       setTimeout(() => inputRef.current?.focus(), 0);
     };
 
@@ -294,35 +311,51 @@ export default function AskView() {
   }
 
   const empty = turns.length === 0 && !busy;
+  const iconBtn: React.CSSProperties = {
+    width: "30px", height: "30px", borderRadius: "6px", border: "none", background: "transparent", color: "var(--text-secondary)",
+    display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0,
+  };
 
   return (
-    <div style={{ maxWidth: "860px", margin: "0 auto", display: "flex", flexDirection: "column", minHeight: "calc(100vh - 64px)" }}>
+    <div
+      role="dialog"
+      aria-label="Ask the dashboard"
+      style={{
+        position: "fixed", right: "24px", bottom: "88px", zIndex: 40,
+        width: expanded ? "min(880px, calc(100vw - 48px))" : "min(420px, calc(100vw - 48px))",
+        height: expanded ? "calc(100vh - 112px)" : "min(640px, calc(100vh - 112px))",
+        display: open ? "flex" : "none", flexDirection: "column",
+        background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "14px",
+        boxShadow: "0 18px 50px rgba(0,0,0,0.55)", overflow: "hidden",
+      }}
+    >
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px", marginBottom: "24px" }}>
-        <div>
-          <h1 style={{ fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>Ask the dashboard</h1>
-          <p style={{ color: "var(--text-secondary)", marginTop: "4px", fontSize: "14px" }}>
-            Questions about briefs, tags and Meta performance, answered from live data. It can also make changes for you, after you approve them.
-          </p>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "10px 10px 10px 16px", borderBottom: "1px solid var(--border)", background: "var(--card)" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: "14px", fontWeight: 600 }}>Ask the dashboard</div>
+          <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>Live data · changes need your OK</div>
         </div>
         {turns.length > 0 && (
-          <button
-            onClick={newChat}
-            style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: "13px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
-          >
-            <RotateCcw size={14} /> New chat
+          <button onClick={newChat} title="New chat" style={iconBtn}>
+            <RotateCcw size={15} />
           </button>
         )}
+        <button onClick={onToggleExpand} title={expanded ? "Make smaller" : "Make bigger"} style={iconBtn}>
+          {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+        </button>
+        <button onClick={onClose} title="Close" style={iconBtn}>
+          <X size={17} />
+        </button>
       </div>
 
       {/* Transcript */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "20px", paddingBottom: "24px" }}>
+      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "18px", position: "relative" }}>
         {empty && (
           <div>
             <div style={{ fontSize: "12px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--text-muted)", marginBottom: "10px" }}>
               Try asking
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "8px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: expanded ? "repeat(auto-fill, minmax(240px, 1fr))" : "1fr", gap: "8px" }}>
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s}
@@ -344,7 +377,7 @@ export default function AskView() {
 
         {turns.map((t, i) =>
           t.role === "user" ? (
-            <div key={i} style={{ alignSelf: "flex-end", maxWidth: "80%", background: "var(--raised)", border: "1px solid var(--border)", borderRadius: "12px", padding: "10px 14px", fontSize: "14px", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+            <div key={i} style={{ alignSelf: "flex-end", maxWidth: "85%", background: "var(--raised)", border: "1px solid var(--border)", borderRadius: "12px", padding: "9px 13px", fontSize: "14px", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
               {t.content}
             </div>
           ) : (
@@ -385,17 +418,16 @@ export default function AskView() {
             <Steps steps={steps} live />
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
 
       {notFound != null && (
-        <div style={{ position: "fixed", bottom: "96px", left: "50%", transform: "translateX(-50%)", background: "var(--raised)", border: "1px solid var(--border)", borderRadius: "8px", padding: "8px 14px", fontSize: "13px", color: "var(--text-secondary)" }}>
+        <div style={{ position: "absolute", bottom: "110px", left: "50%", transform: "translateX(-50%)", background: "var(--raised)", border: "1px solid var(--border)", borderRadius: "8px", padding: "8px 14px", fontSize: "13px", color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
           DTC #{notFound} isn’t on the dashboard.
         </div>
       )}
 
       {/* Composer */}
-      <div style={{ position: "sticky", bottom: 0, paddingBottom: "8px", background: "var(--bg)" }}>
+      <div style={{ padding: "10px 12px 8px", borderTop: "1px solid var(--border)", background: "var(--bg)" }}>
         <div style={{ display: "flex", alignItems: "flex-end", gap: "8px", border: "1px solid var(--border)", borderRadius: "12px", background: "var(--card)", padding: "8px 8px 8px 14px" }}>
           <textarea
             ref={inputRef}
@@ -432,10 +464,8 @@ export default function AskView() {
           )}
         </div>
         <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "6px", textAlign: "center" }}>
-          Enter to send · Shift+Enter for a new line · Click any DTC # to open the brief
-          {autoApprove && (
+          {autoApprove ? (
             <>
-              {" · "}
               <span style={{ color: "#fbbf24" }}>Changes apply without asking in this chat</span>{" "}
               <button
                 onClick={() => setAutoApprove(false)}
@@ -444,6 +474,8 @@ export default function AskView() {
                 ask me again
               </button>
             </>
+          ) : (
+            "Enter to send · Click any DTC # to open the brief"
           )}
         </div>
       </div>
