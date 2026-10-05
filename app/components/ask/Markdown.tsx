@@ -10,7 +10,10 @@ import Chart, { parseChart } from "@/app/components/ask/Chart";
 
 type OnDtc = ((dtc: number) => void) | undefined;
 
-const INLINE = /(\*\*[^*]+\*\*|`[^`]+`|_[^_\s][^_]*_|\*[^*\s][^*]*\*|DTC\s?#\d+)/g;
+const INLINE = /(\[[^\]]+\]\(https:\/\/[^\s)]+\)|\*\*[^*]+\*\*|`[^`]+`|_[^_\s][^_]*_|\*[^*\s][^*]*\*|DTC\s?#\d+)/g;
+
+// Links are drawn only to Meta and Triple Whale; anything else shows as text.
+const LINK_HOSTS = /(^|\.)(facebook\.com|triplewhale\.com)$/i;
 
 function inline(text: string, onDtc: OnDtc, keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
@@ -21,7 +24,20 @@ function inline(text: string, onDtc: OnDtc, keyBase: string): ReactNode[] {
     const at = m.index ?? 0;
     if (at > last) out.push(text.slice(last, at));
     const key = `${keyBase}-${i++}`;
-    if (tok.startsWith("**")) {
+    const link = tok.match(/^\[([^\]]+)\]\((https:\/\/[^\s)]+)\)$/);
+    if (link) {
+      let host = "";
+      try { host = new URL(link[2]).hostname; } catch { /* not a URL */ }
+      out.push(
+        LINK_HOSTS.test(host) ? (
+          <a key={key} href={link[2]} target="_blank" rel="noreferrer" style={{ color: "#7cb4ff", textDecoration: "underline", textDecorationColor: "rgba(124,180,255,0.35)", textUnderlineOffset: "2px" }}>
+            {link[1]}
+          </a>
+        ) : (
+          link[1]
+        )
+      );
+    } else if (tok.startsWith("**")) {
       out.push(<strong key={key} style={{ fontWeight: 600, color: "var(--text)" }}>{inline(tok.slice(2, -2), onDtc, key)}</strong>);
     } else if (tok.startsWith("`")) {
       out.push(<code key={key} style={{ fontSize: "12px", background: "var(--raised)", padding: "1px 5px", borderRadius: "4px" }}>{tok.slice(1, -1)}</code>);

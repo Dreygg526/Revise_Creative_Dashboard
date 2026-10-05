@@ -71,6 +71,8 @@ interface BriefPerf {
   nc_revenue: number;
   purchases: number;
   nc_orders: number;
+  meta_revenue: number;      // Meta's own attribution (Ads Manager / Moby), not the pixel
+  meta_purchases: number;
   impressions: number;
   clicks: number;
   first_spend: string | null;
@@ -81,6 +83,8 @@ interface WindowData {
   start: string;
   end: string;
   byAd: Map<string, BriefPerf>;
+  rows: LifetimeAdRow[];              // every Meta ad that spent in the window
+  briefOfMeta: Map<string, string>;   // Meta ad id -> dashboard ads.id it rolls into
   unmatched: { ad_name: string; adset_name: string | null; spend: number; reason: string }[];
   totalSpend: number;
 }
@@ -127,6 +131,8 @@ function windowData(ctx: Ctx, start: string, end: string): Promise<WindowData> {
           clicks: m.clicks,
           nc_revenue: metas.reduce((s, x) => s + x.nc_revenue, 0),
           nc_orders: metas.reduce((s, x) => s + x.nc_orders, 0),
+          meta_revenue: metas.reduce((s, x) => s + x.meta_reported_revenue, 0),
+          meta_purchases: metas.reduce((s, x) => s + x.meta_reported_purchases, 0),
           first_spend: metas.length ? metas.map((x) => x.first_spend).sort()[0] : null,
           metas,
         });
@@ -135,6 +141,8 @@ function windowData(ctx: Ctx, start: string, end: string): Promise<WindowData> {
         start,
         end,
         byAd,
+        rows,
+        briefOfMeta: new Map(matches.flatMap((m) => m.metaAdIds.map((id) => [id, m.adId] as [string, string]))),
         unmatched: unmatched
           .sort((a, b) => b.spend - a.spend)
           .map((u) => ({ ad_name: u.ad_name, adset_name: byMeta.get(u.ad_id)?.adset_name ?? null, spend: u.spend, reason: u.reason })),
@@ -169,6 +177,8 @@ function perfOut(ctx: Ctx, p: BriefPerf | undefined) {
     cpa: r2(ratio(p.spend, p.purchases)),
     purchases: p.purchases,
     nc_orders: p.nc_orders,
+    meta_reported_roas: r2(ratio(p.meta_revenue, p.spend)),
+    meta_reported_purchases: p.meta_purchases,
     ctr_pct: r2(p.impressions > 0 ? (p.clicks / p.impressions) * 100 : null),
     cvr_pct: r2(p.clicks > 0 ? (p.purchases / p.clicks) * 100 : null),
     first_spend_in_window: p.first_spend,
@@ -209,12 +219,14 @@ function totalsOf(ctx: Ctx, perfs: (BriefPerf | undefined)[]) {
   const nc = ps.reduce((s, p) => s + p.nc_revenue, 0);
   const rev = ps.reduce((s, p) => s + p.revenue, 0);
   const purchases = ps.reduce((s, p) => s + p.purchases, 0);
+  const metaRev = ps.reduce((s, p) => s + p.meta_revenue, 0);
   const verdicts = perfs.map((p) => verdict(ctx, p));
   return {
     briefs_with_spend: ps.length,
     spend: r0(spend),
     nc_roas: r2(ratio(nc, spend)),
     roas: r2(ratio(rev, spend)),
+    meta_reported_roas: r2(ratio(metaRev, spend)),
     cpa: r2(ratio(spend, purchases)),
     winners: verdicts.filter((v) => v === "Winner").length,
     losers: verdicts.filter((v) => v === "Loser").length,
@@ -393,6 +405,10 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
                 nc_roas: r2(ratio(m.nc_revenue, m.spend)),
                 roas: r2(ratio(m.revenue, m.spend)),
                 cpa: r2(ratio(m.spend, m.purchases)),
+                meta_ad_id: m.ad_id,
+                meta_reported_roas: r2(ratio(m.meta_reported_revenue, m.spend)),
+                meta_reported_purchases: m.meta_reported_purchases,
+                ads_manager_url: adsManagerUrl(m.account_id, m.ad_id),
                 ctr_pct: r2(m.impressions > 0 ? (m.clicks / m.impressions) * 100 : null),
                 };
               }),
@@ -463,15 +479,16 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
       onCall(`Account trend by ${g} · ${describeWindow(w)}`);
       const series = await fetchTripleWhaleAccountDaily(w.start, w.end);
       const bucketOf = (d: string) => (g === "day" ? d : g === "month" ? d.slice(0, 7) : weekStart(d));
-      const agg = new Map<string, { spend: number; revenue: number; nc: number; purchases: number; imp: number; clicks: number }>();
+      const agg = new Map<string, { spend: number; revenue: number; nc: number; meta: number; purchases: number; imp: number; clicks: number }>();
       for (const d of series) {
         const k = bucketOf(d.date);
-        const a = agg.get(k) ?? { spend: 0, revenue: 0, nc: 0, purchases: 0, imp: 0, clicks: 0 };
+        const a = agg.get(k) ?? { spend: 0, revenue: 0, nc: 0, meta: 0, purchases: 0, imp: 0, clicks: 0 };
         a.spend += d.spend; a.revenue += d.revenue; a.nc += d.nc_revenue;
-        a.purchases += d.purchases; a.imp += d.impressions; a.clicks += d.clicks;
+        a.purchases += d.purchases; a.imp += d.impressions; a.clicks += d.clicks; a.meta += d.meta_reported_revenue;
         agg.set(k, a);
       }
-      const shape = (a: { spend: number; revenue: number; nc: number; purchases: number; imp: number; clicks: number }) => ({
+      const shape = (a: { spend: number; revenue: number; nc: number; meta: number; purchases: number; imp: number; clicks: number }) => ({
+        meta_reported_roas: r2(ratio(a.meta, a.spend)),
         spend: r0(a.spend),
         revenue: r0(a.revenue),
         nc_revenue: r0(a.nc),
@@ -481,8 +498,8 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
         ctr_pct: r2(a.imp > 0 ? (a.clicks / a.imp) * 100 : null),
       });
       const total = [...agg.values()].reduce(
-        (t, a) => ({ spend: t.spend + a.spend, revenue: t.revenue + a.revenue, nc: t.nc + a.nc, purchases: t.purchases + a.purchases, imp: t.imp + a.imp, clicks: t.clicks + a.clicks }),
-        { spend: 0, revenue: 0, nc: 0, purchases: 0, imp: 0, clicks: 0 }
+        (t, a) => ({ spend: t.spend + a.spend, revenue: t.revenue + a.revenue, nc: t.nc + a.nc, meta: t.meta + a.meta, purchases: t.purchases + a.purchases, imp: t.imp + a.imp, clicks: t.clicks + a.clicks }),
+        { spend: 0, revenue: 0, nc: 0, meta: 0, purchases: 0, imp: 0, clicks: 0 }
       );
       return json({
         window: w,
@@ -680,12 +697,82 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
     },
   });
 
-  return [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, proposeChanges];
+  const getMetaAd = betaZodTool({
+    name: "get_meta_ad",
+    description:
+      "One individual Meta ad (not a whole brief), found by its Meta ad ID (the long number, e.g. 120249122779350390) or by part of its ad / ad set name. " +
+      "Returns its spend, impressions, clicks, Triple Whale pixel results AND Meta's own reported purchases and ROAS (what Ads Manager and Moby show), which brief it rolls into, and an Ads Manager link. " +
+      "Use this whenever the user gives an ad ID, or compares a number with Ads Manager or Triple Whale's Moby.",
+    inputSchema: z.object({
+      ad_id: z.string().regex(/^\d{6,25}$/).optional().describe("Meta ad ID, digits only."),
+      name: z.string().min(2).optional().describe("Part of the ad name or ad set name, case-insensitive."),
+      ...WindowShape,
+    }),
+    run: async (input) => {
+      if (!input.ad_id && !input.name) return JSON.stringify({ error: "Give an ad_id or a name." });
+      const w = resolveWindow(ctx, input.start, input.end);
+      onCall(`Looking up Meta ad ${input.ad_id ?? `“${input.name}”`} · ${describeWindow(w)}`);
+      const data = await windowData(ctx, w.start, w.end);
+      const q = input.name?.toLowerCase();
+      const hits = data.rows
+        .filter((r) => (input.ad_id ? r.ad_id === input.ad_id : `${r.ad_name} ${r.adset_name ?? ""}`.toLowerCase().includes(q!)))
+        .sort((a, b) => b.spend - a.spend);
+      if (!hits.length) {
+        return JSON.stringify({
+          window: w,
+          error: "No Meta ad with spend in this window matches. Try a wider window (omit start for all time). Ads that never spent don't appear in Triple Whale.",
+        });
+      }
+      return JSON.stringify({
+        window: w,
+        note: "pixel_* = Triple Whale pixel (Triple Attribution, what the dashboard and the team's rule use). meta_reported_* = Meta's own attribution, what Ads Manager and Moby show. Spend and impressions are the same in both.",
+        matches: hits.length,
+        ads: hits.slice(0, 20).map((r) => {
+          const briefId = data.briefOfMeta.get(r.ad_id);
+          const brief = briefId ? ctx.ads.find((a) => a.id === briefId) : undefined;
+          if (r.image_url) ctx.images.add(r.image_url);
+          return {
+            meta_ad_id: r.ad_id,
+            ad_name: r.ad_name,
+            adset_name: r.adset_name,
+            campaign_name: r.campaign_name,
+            account_id: r.account_id,
+            brief: brief ? { dtc: brief.dtc_number, name: brief.ad_name } : null,
+            first_spend_in_window: r.first_spend,
+            spend: r2(r.spend),
+            impressions: r.impressions,
+            clicks: r.clicks,
+            ctr_pct: r2(r.impressions > 0 ? (r.clicks / r.impressions) * 100 : null),
+            pixel_purchases: r.purchases,
+            pixel_revenue: r2(r.revenue),
+            pixel_roas: r2(ratio(r.revenue, r.spend)),
+            pixel_nc_roas: r2(ratio(r.nc_revenue, r.spend)),
+            meta_reported_purchases: r.meta_reported_purchases,
+            meta_reported_revenue: r2(r.meta_reported_revenue),
+            meta_reported_roas: r2(ratio(r.meta_reported_revenue, r.spend)),
+            thumbnail: r.image_url,
+            ads_manager_url: adsManagerUrl(r.account_id, r.ad_id),
+          };
+        }),
+      });
+    },
+  });
+
+  return [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, getMetaAd, proposeChanges];
 }
 
 // ---------------------------------------------------------------------------
 // Progress labels and date helpers
 // ---------------------------------------------------------------------------
+
+// Same link shape as adRowUrl() in AdDetailModal: the ad's own account plus
+// the business id, without which Facebook redirects to the viewer's own account.
+const META_BUSINESS_ID = (process.env.NEXT_PUBLIC_META_BUSINESS_ID || "1888429485321387").trim();
+function adsManagerUrl(account: string | null, adId: string): string | null {
+  const acct = (account ?? "").replace(/^act_/, "").trim();
+  if (!/^\d+$/.test(acct)) return null;
+  return `https://adsmanager.facebook.com/adsmanager/manage/ads?act=${acct}&business_id=${META_BUSINESS_ID}&global_scope_id=${META_BUSINESS_ID}&selected_ad_ids=${adId}`;
+}
 
 // Fetch a thumbnail server-side and hand it to the model as base64, so one
 // dead CDN link costs that image rather than failing the whole request.
@@ -742,6 +829,9 @@ How the data works — you need this to read the numbers correctly:
 - A "brief" is one dashboard card with a DTC number (e.g. DTC #82). Under it sit many Meta ads (creatives, variants, iterations, duplicated ad sets); their spend and revenue are summed into the brief. Decimal variants (#21.1, #21.2) roll up into the parent #21.
 - Performance comes from Triple Whale's pixel (Triple Attribution), not Meta's self-reported numbers, and covers all six of the shop's Meta ad accounts. It will not match Ads Manager or Atria exactly — don't treat that as an error.
 - NC ROAS = new-customer revenue ÷ spend. It is the team's headline metric. ROAS = all revenue ÷ spend. Both are margin-blind.
+- Two attributions exist for the same ads. The default numbers (roas, nc_roas, purchases) are Triple Whale's pixel. meta_reported_roas / meta_reported_purchases are Meta's own attribution: what Ads Manager and Triple Whale's Moby show. Spend and impressions are identical in both; purchases and revenue differ, usually with the pixel finding more. When the user compares with Ads Manager or Moby, or asks about "Meta's numbers", lead with the Meta-reported figures and show the pixel ones beside them.
+- Scope matters as much as attribution. A brief sums every Meta ad under it; one Meta ad is a single creative. If the user gives an ad ID or a creative name, use get_meta_ad and answer for that ad, then say which brief it belongs to and how the brief did overall. Always say which scope, which dates and which attribution a number is.
+- Links: when you mention a specific Meta ad, you may link it as [Open in Ads Manager](ads_manager_url), using only an ads_manager_url a tool returned.
 - The team's rule: a brief is a Winner when it spent at least $${ctx.rule.minSpend} and reached NC ROAS ${ctx.rule.ncTarget}; Loser if it spent that much but fell short; "Too early" below $${ctx.rule.minSpend}. Tools return this as verdict_by_rule for the window you ask about. The stored "result" field on cards is almost never filled in — rely on verdict_by_rule.
 - "All time" means roughly the last two years. A window counts only spend inside it, so a brief launched in June looks small in a September window.
 - Some spend can't be attributed to any brief (no DTC number in the Meta names, or a DTC number nobody created a card for). If totals look low, check unmatched_spend.

@@ -297,6 +297,8 @@ const LIFETIME_QUERY = `
     SUM(order_revenue)              AS revenue,
     SUM(new_customer_order_revenue) AS nc_revenue,
     SUM(new_customer_orders)        AS nc_orders,
+    SUM(channel_reported_conversions)       AS meta_reported_purchases,
+    SUM(channel_reported_conversion_value)  AS meta_reported_revenue,
     SUM(impressions)                AS impressions,
     SUM(clicks)                     AS clicks
   FROM pixel_joined_tvf
@@ -321,6 +323,11 @@ export interface LifetimeAdRow extends MetaInsightRow {
   nc_revenue: number;
   nc_orders: number;
   image_url: string | null;   // Triple Whale's own CDN copy of the creative thumbnail
+  // What Meta itself reports (Ads Manager / Moby's numbers), as opposed to
+  // Triple Whale's pixel above. Verified 2026-10-05 on ad 120249122779350390,
+  // Sep 5–Oct 4: 2 purchases / $102.50, exactly what Moby showed.
+  meta_reported_purchases: number;
+  meta_reported_revenue: number;
 }
 
 export async function fetchTripleWhaleLifetimeAds(endDate: string): Promise<LifetimeAdRow[]> {
@@ -351,6 +358,8 @@ export async function fetchTripleWhaleAdsInRange(startDate: string, endDate: str
       nc_revenue: num(r.nc_revenue),
       nc_orders: num(r.nc_orders),
       image_url: r.image_url ? String(r.image_url) : null,
+      meta_reported_purchases: num(r.meta_reported_purchases),
+      meta_reported_revenue: num(r.meta_reported_revenue),
     });
   }
   return out;
@@ -374,6 +383,7 @@ const ACCOUNT_DAILY_QUERY = `
     SUM(new_customer_order_revenue) AS nc_revenue,
     SUM(orders_quantity)            AS purchases,
     SUM(new_customer_orders)        AS nc_orders,
+    SUM(channel_reported_conversion_value) AS meta_reported_revenue,
     SUM(impressions)                AS total_impressions,
     SUM(clicks)                     AS total_clicks
   FROM pixel_joined_tvf
@@ -390,6 +400,7 @@ export interface AccountDay {
   nc_revenue: number;
   purchases: number;
   nc_orders: number;
+  meta_reported_revenue: number;
   impressions: number;
   clicks: number;
 }
@@ -403,6 +414,7 @@ export async function fetchTripleWhaleAccountDaily(startDate: string, endDate: s
     nc_revenue: num(r.nc_revenue),
     purchases: num(r.purchases),
     nc_orders: num(r.nc_orders),
+    meta_reported_revenue: num(r.meta_reported_revenue),
     impressions: num(r.total_impressions),
     clicks: num(r.total_clicks),
   }));
