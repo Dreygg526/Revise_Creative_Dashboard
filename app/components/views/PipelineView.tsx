@@ -146,7 +146,10 @@ export default function PipelineView() {
   const productOptions = buildOptions(valuesFor("product"), ads, (a) => a.product);
   const personaOptions = buildOptions(valuesFor("persona"), ads, (a) => a.persona);
   const angleOptions = buildOptions(valuesFor("angle"), ads, (a) => a.angle);
-  const pageOptions = buildOptions(valuesFor("whitelisting_page"), ads, (a) => a.whitelisting_pages ?? []);
+  // Pages are the one filter that lists only Settings values: old ads still carry
+  // ~15 legacy spellings from before the list existed, and the team asked for
+  // just the real pages.
+  const pageOptions = valuesFor("whitelisting_page");
   const adTypeOptions = buildOptions(valuesFor("ad_type"), ads, (a) => a.ad_type);
   const formatOptions = buildOptions(valuesFor("format"), ads, (a) => a.format);
   const priorityOptions = buildOptions(valuesFor("priority"), ads, (a) => a.priority);
