@@ -3,12 +3,15 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { matchInsights, type MetaInsightRow } from "@/app/lib/metaMatch";
 import { activeProvider, fetchTripleWhaleRows, TripleWhaleError } from "@/app/lib/tripleWhale";
 import { can } from "@/app/lib/permissions";
+import { requireCronSecret } from "@/app/lib/apiAuth";
 import type { Ad } from "@/app/types";
 
 // This route runs ONLY on the server. META_ACCESS_TOKEN never reaches
 // the browser — same pattern as /api/invite and /api/generate-copy.
 export const runtime = "nodejs";
-export const maxDuration = 60;
+// ~200 row updates run one at a time; 60s was enough for a click but leaves
+// the daily cron no headroom as the board grows.
+export const maxDuration = 300;
 
 // Meta pins you to an API version; v25.0 is stable with a long runway
 // (v26.0 shipped Jul 2026 but carries unrelated placement breakages).
@@ -258,139 +261,182 @@ export async function POST(req: Request) {
       );
     }
 
-    // Caller is authorized — now it's safe to report on server config.
-    // Which provider runs is decided by whether a Triple Whale key exists.
-    const provider = activeProvider();
-    const rows: MetaInsightRow[] = [];
-    let pages = 0;
-    let truncated = false;
-    // What gets logged as the source of this run: a Meta ad account or a shop.
-    let sourceId = accountId;
+    return await runSync({ admin, token, accountId, datePreset, dryRun, ranBy: email });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Unexpected error.";
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
 
-    // Meta ad id -> creative thumbnail. Only Triple Whale supplies these.
-    let images: Record<string, string> = {};
+// The sync itself, shared by the button (POST, a signed-in member with
+// edit_performance) and the daily Vercel Cron (GET). Callers authenticate first.
+async function runSync(opts: {
+  admin: SupabaseClient;
+  token: string | undefined;
+  accountId: string;
+  datePreset: string;
+  dryRun: boolean;
+  ranBy: string;
+}) {
+  const { admin, token, accountId, datePreset, dryRun } = opts;
+  const email = opts.ranBy;
+  // Caller is authorized — now it's safe to report on server config.
+  // Which provider runs is decided by whether a Triple Whale key exists.
+  const provider = activeProvider();
+  const rows: MetaInsightRow[] = [];
+  let pages = 0;
+  let truncated = false;
+  // What gets logged as the source of this run: a Meta ad account or a shop.
+  let sourceId = accountId;
 
-    if (provider === "triple_whale") {
-      sourceId = process.env.TRIPLE_WHALE_SHOP_ID || "rcv9b7-p1.myshopify.com";
-      try {
-        const result = await fetchTripleWhaleRows(datePreset);
-        rows.push(...result.rows);
-        images = result.images;
-      } catch (e) {
-        if (e instanceof TripleWhaleError) {
-          await admin.from("meta_sync_runs").insert({
-            ran_by: email,
-            ad_account_id: sourceId,
-            date_preset: datePreset,
-            error: e.message,
-          });
-          return NextResponse.json({ error: e.message }, { status: e.status });
-        }
-        throw e;
+  // Meta ad id -> creative thumbnail. Only Triple Whale supplies these.
+  let images: Record<string, string> = {};
+
+  if (provider === "triple_whale") {
+    sourceId = process.env.TRIPLE_WHALE_SHOP_ID || "rcv9b7-p1.myshopify.com";
+    try {
+      const result = await fetchTripleWhaleRows(datePreset);
+      rows.push(...result.rows);
+      images = result.images;
+    } catch (e) {
+      if (e instanceof TripleWhaleError) {
+        await admin.from("meta_sync_runs").insert({
+          ran_by: email,
+          ad_account_id: sourceId,
+          date_preset: datePreset,
+          error: e.message,
+        });
+        return NextResponse.json({ error: e.message }, { status: e.status });
       }
-    } else {
-      const metaResult = await fetchMetaRows({ token, accountId, datePreset, admin, email });
-      if ("error" in metaResult) {
-        return NextResponse.json({ error: metaResult.error }, { status: metaResult.status });
-      }
-      rows.push(...metaResult.rows);
-      pages = metaResult.pages;
-      truncated = metaResult.truncated;
+      throw e;
+    }
+  } else {
+    const metaResult = await fetchMetaRows({ token, accountId, datePreset, admin, email });
+    if ("error" in metaResult) {
+      return NextResponse.json({ error: metaResult.error }, { status: metaResult.status });
+    }
+    rows.push(...metaResult.rows);
+    pages = metaResult.pages;
+    truncated = metaResult.truncated;
+  }
+
+  // ---- Match against the dashboard ----
+  const { data: adsData, error: adsErr } = await admin
+    .from("ads")
+    .select("*");
+
+  if (adsErr) {
+    return NextResponse.json({ error: `Couldn't load dashboard ads: ${adsErr.message}` }, { status: 500 });
+  }
+
+  const ads = (adsData ?? []) as Ad[];
+  const { matches, unmatched } = matchInsights(rows, ads);
+
+  // ---- Write the meta_* columns (manual fields left untouched) ----
+  const syncedAt = new Date().toISOString();
+  let updated = 0;
+  const writeErrors: string[] = [];
+
+  // meta_ad_image_url arrives in schema v4. Probe for it once rather than
+  // assuming: writing a column that doesn't exist fails every row update,
+  // and a missing thumbnail is not worth breaking a sync over.
+  let canWriteImage = false;
+  if (Object.keys(images).length > 0) {
+    const { error: probeErr } = await admin.from("ads").select("meta_ad_image_url").limit(1);
+    canWriteImage = !probeErr;
+  }
+
+  // meta_breakdown arrives in schema v5. Same probe, same reason: a missing
+  // per-ad breakdown is not worth failing every row update over.
+  const { error: breakdownProbeErr } = await admin.from("ads").select("meta_breakdown").limit(1);
+  const canWriteBreakdown = !breakdownProbeErr;
+
+  // A brief with a runaway number of ad sets shouldn't bloat its row. The
+  // rows are spend-sorted, so the cap drops the tail that nobody scrolls to.
+  const BREAKDOWN_LIMIT = 200;
+
+  if (!dryRun) {
+    for (const m of matches) {
+      // Several Meta ads can roll into one brief; take the first thumbnail
+      // we have, which is the highest-spend variant since matchInsights
+      // orders them that way.
+      const image = m.metaAdIds.map((id) => images[id]).find(Boolean) ?? null;
+      const { error: upErr } = await admin
+        .from("ads")
+        .update({
+          ...(canWriteImage ? { meta_ad_image_url: image } : {}),
+          ...(canWriteBreakdown ? { meta_breakdown: m.rows.slice(0, BREAKDOWN_LIMIT) } : {}),
+          meta_spend: m.spend,
+          meta_purchases: m.purchases,
+          meta_revenue: m.revenue,
+          meta_cvr: m.cvr,
+          meta_impressions: m.impressions,
+          meta_clicks: m.clicks,
+          meta_matched_name: m.matchedName.slice(0, 500),
+          meta_matched_count: m.matchedCount,
+          meta_match_method: m.method,
+          meta_ad_ids: m.metaAdIds,
+          meta_synced_at: syncedAt,
+        })
+        .eq("id", m.adId);
+
+      if (upErr) writeErrors.push(`${m.matchedName}: ${upErr.message}`);
+      else updated++;
     }
 
-    // ---- Match against the dashboard ----
-    const { data: adsData, error: adsErr } = await admin
-      .from("ads")
-      .select("*");
-
-    if (adsErr) {
-      return NextResponse.json({ error: `Couldn't load dashboard ads: ${adsErr.message}` }, { status: 500 });
-    }
-
-    const ads = (adsData ?? []) as Ad[];
-    const { matches, unmatched } = matchInsights(rows, ads);
-
-    // ---- Write the meta_* columns (manual fields left untouched) ----
-    const syncedAt = new Date().toISOString();
-    let updated = 0;
-    const writeErrors: string[] = [];
-
-    // meta_ad_image_url arrives in schema v4. Probe for it once rather than
-    // assuming: writing a column that doesn't exist fails every row update,
-    // and a missing thumbnail is not worth breaking a sync over.
-    let canWriteImage = false;
-    if (Object.keys(images).length > 0) {
-      const { error: probeErr } = await admin.from("ads").select("meta_ad_image_url").limit(1);
-      canWriteImage = !probeErr;
-    }
-
-    // meta_breakdown arrives in schema v5. Same probe, same reason: a missing
-    // per-ad breakdown is not worth failing every row update over.
-    const { error: breakdownProbeErr } = await admin.from("ads").select("meta_breakdown").limit(1);
-    const canWriteBreakdown = !breakdownProbeErr;
-
-    // A brief with a runaway number of ad sets shouldn't bloat its row. The
-    // rows are spend-sorted, so the cap drops the tail that nobody scrolls to.
-    const BREAKDOWN_LIMIT = 200;
-
-    if (!dryRun) {
-      for (const m of matches) {
-        // Several Meta ads can roll into one brief; take the first thumbnail
-        // we have, which is the highest-spend variant since matchInsights
-        // orders them that way.
-        const image = m.metaAdIds.map((id) => images[id]).find(Boolean) ?? null;
-        const { error: upErr } = await admin
-          .from("ads")
-          .update({
-            ...(canWriteImage ? { meta_ad_image_url: image } : {}),
-            ...(canWriteBreakdown ? { meta_breakdown: m.rows.slice(0, BREAKDOWN_LIMIT) } : {}),
-            meta_spend: m.spend,
-            meta_purchases: m.purchases,
-            meta_revenue: m.revenue,
-            meta_cvr: m.cvr,
-            meta_impressions: m.impressions,
-            meta_clicks: m.clicks,
-            meta_matched_name: m.matchedName.slice(0, 500),
-            meta_matched_count: m.matchedCount,
-            meta_match_method: m.method,
-            meta_ad_ids: m.metaAdIds,
-            meta_synced_at: syncedAt,
-          })
-          .eq("id", m.adId);
-
-        if (upErr) writeErrors.push(`${m.matchedName}: ${upErr.message}`);
-        else updated++;
-      }
-
-      // Persist the whole result — including the unmatched list — so the
-      // Analytics panel can restore it after a reload or a server restart
-      // instead of losing it with the React state.
-      await admin.from("meta_sync_runs").insert({
-        ran_by: email,
-        ad_account_id: sourceId,
-        date_preset: datePreset,
-        rows_fetched: rows.length,
-        ads_matched: matches.length,
-        ads_updated: updated,
-        unmatched_count: unmatched.length,
-        unmatched,
-        error: writeErrors.length ? writeErrors.join(" | ").slice(0, 1000) : null,
-      });
-    }
-
-    return NextResponse.json({
-      ok: true,
-      dryRun,
-      syncedAt,
-      provider,
-      accountId: sourceId,
-      datePreset,
-      rowsFetched: rows.length,
-      adsMatched: matches.length,
-      adsUpdated: updated,
-      truncated,
+    // Persist the whole result — including the unmatched list — so the
+    // Analytics panel can restore it after a reload or a server restart
+    // instead of losing it with the React state.
+    await admin.from("meta_sync_runs").insert({
+      ran_by: email,
+      ad_account_id: sourceId,
+      date_preset: datePreset,
+      rows_fetched: rows.length,
+      ads_matched: matches.length,
+      ads_updated: updated,
+      unmatched_count: unmatched.length,
       unmatched,
-      writeErrors,
+      error: writeErrors.length ? writeErrors.join(" | ").slice(0, 1000) : null,
+    });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    dryRun,
+    syncedAt,
+    provider,
+    accountId: sourceId,
+    datePreset,
+    rowsFetched: rows.length,
+    adsMatched: matches.length,
+    adsUpdated: updated,
+    truncated,
+    unmatched,
+    writeErrors,
+  });
+}
+
+// Daily Vercel Cron (vercel.json). Always syncs lifetime ("maximum"), so the
+// spend on pipeline cards never silently turns into whatever window someone
+// last picked on the Analytics button.
+export async function GET(req: Request) {
+  const auth = requireCronSecret(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+  try {
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!serviceKey) {
+      return NextResponse.json({ error: "Server is missing the service role key." }, { status: 500 });
+    }
+    const admin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    return await runSync({
+      admin,
+      token: process.env.META_ACCESS_TOKEN,
+      accountId: process.env.META_AD_ACCOUNT_ID || DEFAULT_ACCOUNT,
+      datePreset: "maximum",
+      dryRun: false,
+      ranBy: "cron",
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unexpected error.";
