@@ -110,6 +110,7 @@ export default function PipelineView() {
   // Board filters. "" always means "no filter on this field".
   const [fProduct, setFProduct] = useState("");
   const [fPersona, setFPersona] = useState("");
+  const [fAngle, setFAngle] = useState("");
   const [fEditor, setFEditor] = useState("");
   const [fAdType, setFAdType] = useState("");
   const [fFormat, setFFormat] = useState("");
@@ -125,6 +126,7 @@ export default function PipelineView() {
   // carrying a since-removed value would be unreachable by filtering.
   const productOptions = buildOptions(valuesFor("product"), ads, (a) => a.product);
   const personaOptions = buildOptions(valuesFor("persona"), ads, (a) => a.persona);
+  const angleOptions = buildOptions(valuesFor("angle"), ads, (a) => a.angle);
   const adTypeOptions = buildOptions(valuesFor("ad_type"), ads, (a) => a.ad_type);
   const formatOptions = buildOptions(valuesFor("format"), ads, (a) => a.format);
   const priorityOptions = buildOptions(valuesFor("priority"), ads, (a) => a.priority);
@@ -146,13 +148,14 @@ export default function PipelineView() {
   const weekOut = weekOutDate.toISOString().slice(0, 10);
 
   const activeFilterCount =
-    [fProduct, fPersona, fEditor, fAdType, fFormat, fPriority, fTiming, fCreated].filter(Boolean).length +
+    [fProduct, fPersona, fAngle, fEditor, fAdType, fFormat, fPriority, fTiming, fCreated].filter(Boolean).length +
     (fUnassigned ? 1 : 0);
   const anyNarrowing = activeFilterCount > 0 || query.trim() !== "";
 
   function clearFilters() {
     setFProduct("");
     setFPersona("");
+    setFAngle("");
     setFEditor("");
     setFAdType("");
     setFFormat("");
@@ -165,6 +168,7 @@ export default function PipelineView() {
   function matchesFilters(a: Ad): boolean {
     if (fProduct && a.product !== fProduct) return false;
     if (fPersona && a.persona !== fPersona) return false;
+    if (fAngle && a.angle !== fAngle) return false;
     if (fEditor && a.assigned_editor !== fEditor) return false;
     if (fAdType && a.ad_type !== fAdType) return false;
     if (fFormat && a.format !== fFormat) return false;
@@ -343,6 +347,7 @@ export default function PipelineView() {
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px", marginBottom: "20px" }}>
         <FilterSelect label="Product" value={fProduct} onChange={setFProduct} options={productOptions} />
         <FilterSelect label="Persona" value={fPersona} onChange={setFPersona} options={personaOptions} />
+        <FilterSelect label="Angle" value={fAngle} onChange={setFAngle} options={angleOptions} />
         <FilterSelect label="Editor" value={fEditor} onChange={setFEditor} options={editorFilterOptions} />
         <FilterSelect label="Ad type" value={fAdType} onChange={setFAdType} options={adTypeOptions} />
         <FilterSelect label="Format" value={fFormat} onChange={setFFormat} options={formatOptions} />
