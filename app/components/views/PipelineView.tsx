@@ -7,13 +7,28 @@ import { useMyRole } from "@/app/hooks/useMyRole";
 import { can } from "@/app/lib/permissions";
 import { useSettings } from "@/app/hooks/useSettings";
 import AdDetailModal from "@/app/components/modals/AdDetailModal";
-import type { Ad } from "@/app/types";
+import { effectivePerf, type Ad } from "@/app/types";
 import { createdMonth, createdMonthLabel, formatCreated, monthLabel } from "@/app/lib/adDates";
 
 // Timing is derived from due_date rather than stored, so its options are fixed
 // here instead of coming from settings_lists.
 const TIMING_OPTIONS = ["Overdue", "Due this week", "No due date"] as const;
 type Timing = (typeof TIMING_OPTIONS)[number] | "";
+
+// Sorting within each stage column. "" keeps the board's usual order (newest first).
+const SORT_OPTIONS = ["Spend: high to low", "Spend: low to high"] as const;
+type SortBy = (typeof SORT_OPTIONS)[number] | "";
+
+// Spend on a card is effectivePerf(): the synced Meta figure, else the manual
+// close-out entry, the same number the ad card's Performance block shows.
+function spendOf(a: Ad): number | null {
+  return effectivePerf(a).spend;
+}
+
+function formatSpend(n: number): string {
+  if (n >= 10_000) return `$${(n / 1000).toFixed(1)}k`;
+  return `$${Math.round(n).toLocaleString("en-US")}`;
+}
 
 // Canonical settings-list order first, then any value that appears on an ad but
 // is missing from the list (renamed or deleted since). Without the second half,
@@ -118,6 +133,7 @@ export default function PipelineView() {
   const [fTiming, setFTiming] = useState<Timing>("");
   const [fCreated, setFCreated] = useState(""); // a month label, e.g. "September 2026"
   const [fUnassigned, setFUnassigned] = useState(false);
+  const [sortBy, setSortBy] = useState<SortBy>("");
 
   const stages = valuesFor("stage");
 
@@ -206,13 +222,28 @@ export default function PipelineView() {
   }
 
   function adsInStage(stage: string): Ad[] {
-    return ads.filter((a) => a.stage === stage && matchesQuery(a) && matchesFilters(a));
+    const list = ads.filter((a) => a.stage === stage && matchesQuery(a) && matchesFilters(a));
+    if (!sortBy) return list;
+    // Ads with no spend go last either way; they aren't "lowest spend", they're unknown.
+    const dir = sortBy === "Spend: high to low" ? -1 : 1;
+    return [...list].sort((x, y) => {
+      const a = spendOf(x), b = spendOf(y);
+      if (a == null && b == null) return 0;
+      if (a == null) return 1;
+      if (b == null) return -1;
+      return (a - b) * dir;
+    });
   }
 
   // Unfiltered total for the stage, so the header can read "3 of 12".
   function totalInStage(stage: string): number {
     return ads.filter((a) => a.stage === stage).length;
   }
+
+  const lastSynced = ads.reduce<string | null>(
+    (max, a) => (a.meta_synced_at && (!max || a.meta_synced_at > max) ? a.meta_synced_at : max),
+    null,
+  );
 
   const liveOpenAd = openAd ? ads.find((a) => a.id === openAd.id) ?? null : null;
 
@@ -375,6 +406,13 @@ export default function PipelineView() {
           Unassigned
         </button>
 
+        <FilterSelect
+          label="Sort"
+          value={sortBy}
+          onChange={(v) => setSortBy(v as SortBy)}
+          options={SORT_OPTIONS as unknown as string[]}
+        />
+
         {activeFilterCount > 0 && (
           <button
             onClick={clearFilters}
@@ -387,6 +425,12 @@ export default function PipelineView() {
           >
             <X size={13} /> Clear ({activeFilterCount})
           </button>
+        )}
+
+        {lastSynced && (
+          <span style={{ marginLeft: "auto", fontSize: "12px", color: "var(--text-muted)" }}>
+            Spend synced {new Date(lastSynced).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+          </span>
         )}
       </div>
 
@@ -663,6 +707,14 @@ function AdCard({
       <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)", lineHeight: 1.35, overflowWrap: "anywhere" }}>
         {ad.ad_name || "Untitled"}
       </div>
+
+      {/* Spend, when there is any */}
+      {spendOf(ad) != null && (
+        <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }}>
+          <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text)" }}>{formatSpend(spendOf(ad)!)}</span>
+          <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>spent</span>
+        </div>
+      )}
 
       {/* Labeled details (only filled ones show) */}
       <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
