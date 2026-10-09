@@ -21,7 +21,9 @@ import {
   fetchTripleWhaleAdsInRange,
   fetchTripleWhaleAccountDaily,
   fetchTripleWhaleByAccount,
+  fetchTripleWhaleVideoStats,
   type LifetimeAdRow,
+  type VideoStats,
 } from "@/app/lib/tripleWhale";
 import { loadThresholds, yesterday } from "@/app/lib/monthlyLearningsRun";
 import { createdMonth } from "@/app/lib/adDates";
@@ -100,6 +102,87 @@ interface BriefPerf {
   clicks: number;
   first_spend: string | null;
   metas: LifetimeAdRow[];
+  eng: Engagement;
+}
+
+// Delivery + video counts summed over a set of Meta ads. Video figures only
+// count ads that had 3-second views, so a brief mixing statics and videos
+// isn't given a diluted hook rate.
+interface Engagement {
+  spend: number;
+  impressions: number;
+  clicks: number;
+  outbound_clicks: number;
+  video_ads: number;
+  video_spend: number;
+  video_impressions: number;
+  v3s: number;
+  thruplays: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p100: number;
+}
+
+const NO_VIDEO: VideoStats = { video_3s_views: 0, thruplays: 0, p25: 0, p50: 0, p75: 0, p100: 0, outbound_clicks: 0, video_seconds: null };
+
+function emptyEngagement(): Engagement {
+  return { spend: 0, impressions: 0, clicks: 0, outbound_clicks: 0, video_ads: 0, video_spend: 0, video_impressions: 0, v3s: 0, thruplays: 0, p25: 0, p50: 0, p75: 0, p100: 0 };
+}
+
+function addEngagement(e: Engagement, r: { spend: number; impressions: number; clicks: number }, v: VideoStats) {
+  e.spend += r.spend;
+  e.impressions += r.impressions;
+  e.clicks += r.clicks;
+  e.outbound_clicks += v.outbound_clicks;
+  if (v.video_3s_views > 0) {
+    e.video_ads += 1;
+    e.video_spend += r.spend;
+    e.video_impressions += r.impressions;
+    e.v3s += v.video_3s_views;
+    e.thruplays += v.thruplays;
+    e.p25 += v.p25;
+    e.p50 += v.p50;
+    e.p75 += v.p75;
+    e.p100 += v.p100;
+  }
+}
+
+function sumEngagement(rows: LifetimeAdRow[], video: Map<string, VideoStats>): Engagement {
+  const e = emptyEngagement();
+  for (const r of rows) addEngagement(e, r, video.get(r.ad_id) ?? NO_VIDEO);
+  return e;
+}
+
+function mergeEngagement(list: Engagement[]): Engagement {
+  const e = emptyEngagement();
+  for (const x of list) for (const k of Object.keys(e) as (keyof Engagement)[]) e[k] += x[k];
+  return e;
+}
+
+// Hook rate = 3-second views / impressions. Hold rate = ThruPlays / 3-second
+// views (of the people the hook stopped, how many watched 15s or to the end).
+// Both sum-over-sum, like every other ratio here.
+function engagementOut(e: Engagement, videoSeconds?: number | null) {
+  const pct = (a: number, b: number) => r2(b > 0 ? (a / b) * 100 : null);
+  return {
+    cpm: r2(e.impressions > 0 ? (e.spend / e.impressions) * 1000 : null),
+    cpc: r2(ratio(e.spend, e.clicks)),
+    outbound_ctr_pct: pct(e.outbound_clicks, e.impressions),
+    video: e.video_ads > 0
+      ? {
+          video_ads: e.video_ads,
+          video_spend: r0(e.video_spend),
+          hook_rate_pct: pct(e.v3s, e.video_impressions),
+          hold_rate_pct: pct(e.thruplays, e.v3s),
+          thruplay_rate_pct: pct(e.thruplays, e.video_impressions),
+          of_3s_viewers_reached_pct: { p25: pct(e.p25, e.v3s), p50: pct(e.p50, e.v3s), p75: pct(e.p75, e.v3s), p100: pct(e.p100, e.v3s) },
+          three_second_views: e.v3s,
+          thruplays: e.thruplays,
+          ...(videoSeconds ? { video_length_s: videoSeconds } : {}),
+        }
+      : null,
+  };
 }
 
 interface WindowData {
@@ -108,6 +191,7 @@ interface WindowData {
   byAd: Map<string, BriefPerf>;
   rows: LifetimeAdRow[];              // every Meta ad that spent in the window
   briefOfMeta: Map<string, string>;   // Meta ad id -> dashboard ads.id it rolls into
+  video: Map<string, VideoStats>;     // Meta ad id -> video views, ThruPlays, quartiles, outbound clicks
   unmatched: { ad_name: string; adset_name: string | null; spend: number; reason: string }[];
   totalSpend: number;
 }
@@ -164,7 +248,12 @@ function windowData(ctx: Ctx, w: { start: string; end: string; account: string |
   let p = ctx.windows.get(key);
   if (!p) {
     p = (async () => {
-      const all = await fetchTripleWhaleAdsInRange(start, end);
+      // Video stats are a nice-to-have: if that table fails, answers lose
+      // hook/hold rate rather than failing outright.
+      const [all, video] = await Promise.all([
+        fetchTripleWhaleAdsInRange(start, end),
+        fetchTripleWhaleVideoStats(start, end).catch(() => new Map<string, VideoStats>()),
+      ]);
       const rows = account ? all.filter((r) => r.account_id === account) : all;
       const byMeta = new Map(rows.map((r) => [r.ad_id, r]));
       const { matches, unmatched } = matchInsights(rows, ctx.ads);
@@ -183,6 +272,7 @@ function windowData(ctx: Ctx, w: { start: string; end: string; account: string |
           meta_purchases: metas.reduce((s, x) => s + x.meta_reported_purchases, 0),
           first_spend: metas.length ? metas.map((x) => x.first_spend).sort()[0] : null,
           metas,
+          eng: sumEngagement(metas, video),
         });
       }
       return {
@@ -190,6 +280,7 @@ function windowData(ctx: Ctx, w: { start: string; end: string; account: string |
         end,
         byAd,
         rows,
+        video,
         briefOfMeta: new Map(matches.flatMap((m) => m.metaAdIds.map((id) => [id, m.adId] as [string, string]))),
         unmatched: unmatched
           .sort((a, b) => b.spend - a.spend)
@@ -229,6 +320,7 @@ function perfOut(ctx: Ctx, p: BriefPerf | undefined) {
     meta_reported_purchases: p.meta_purchases,
     ctr_pct: r2(p.impressions > 0 ? (p.clicks / p.impressions) * 100 : null),
     cvr_pct: r2(p.clicks > 0 ? (p.purchases / p.clicks) * 100 : null),
+    ...engagementOut(p.eng),
     first_spend_in_window: p.first_spend,
     meta_ads: p.metas.length,
     verdict_by_rule: verdict(ctx, p),
@@ -269,6 +361,7 @@ function totalsOf(ctx: Ctx, perfs: (BriefPerf | undefined)[]) {
   const purchases = ps.reduce((s, p) => s + p.purchases, 0);
   const metaRev = ps.reduce((s, p) => s + p.meta_revenue, 0);
   const verdicts = perfs.map((p) => verdict(ctx, p));
+  const eng = engagementOut(mergeEngagement(ps.map((p) => p.eng)));
   return {
     briefs_with_spend: ps.length,
     spend: r0(spend),
@@ -279,6 +372,10 @@ function totalsOf(ctx: Ctx, perfs: (BriefPerf | undefined)[]) {
     winners: verdicts.filter((v) => v === "Winner").length,
     losers: verdicts.filter((v) => v === "Loser").length,
     too_early: verdicts.filter((v) => v === "Too early").length,
+    cpm: eng.cpm,
+    hook_rate_pct: eng.video?.hook_rate_pct ?? null,
+    hold_rate_pct: eng.video?.hold_rate_pct ?? null,
+    video_spend: eng.video?.video_spend ?? 0,
   };
 }
 
@@ -356,7 +453,7 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
       ...WindowShape,
       only_with_spend: z.boolean().optional().describe("Drop briefs with no spend in the window."),
       min_spend: z.number().optional().describe("Drop briefs below this spend. Use it when ranking by a ratio, so a $40 brief can't top the list."),
-      sort_by: z.enum(["spend", "nc_roas", "roas", "cpa", "created", "dtc"]).optional().describe("Default spend."),
+      sort_by: z.enum(["spend", "nc_roas", "roas", "cpa", "hook_rate", "hold_rate", "created", "dtc"]).optional().describe("Default spend. hook_rate / hold_rate rank video briefs; briefs with no video sort last."),
       ascending: z.boolean().optional(),
       limit: z.number().int().min(1).max(150).optional().describe("Default 40."),
     }),
@@ -375,6 +472,8 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
           case "nc_roas": return p ? ratio(p.nc_revenue, p.spend) : null;
           case "roas": return p ? ratio(p.revenue, p.spend) : null;
           case "cpa": return p ? ratio(p.spend, p.purchases) : null;
+          case "hook_rate": return p ? ratio(p.eng.v3s, p.eng.video_impressions) : null;
+          case "hold_rate": return p ? ratio(p.eng.thruplays, p.eng.v3s) : null;
           case "created": return x.ad.created_at;
           case "dtc": return x.ad.dtc_number;
         }
@@ -459,6 +558,8 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
                 meta_reported_purchases: m.meta_reported_purchases,
                 ads_manager_url: adsManagerUrl(m.account_id, m.ad_id),
                 ctr_pct: r2(m.impressions > 0 ? (m.clicks / m.impressions) * 100 : null),
+                impressions: m.impressions,
+                ...metaAdEngagement(data, m),
                 };
               }),
           };
@@ -750,7 +851,7 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
     name: "get_meta_ad",
     description:
       "One individual Meta ad (not a whole brief), found by its Meta ad ID (the long number, e.g. 120249122779350390) or by part of its ad / ad set name. " +
-      "Returns its spend, impressions, clicks, Triple Whale pixel results AND Meta's own reported purchases and ROAS (what Ads Manager and Moby show), which brief it rolls into, and an Ads Manager link. " +
+      "Returns its spend, impressions, clicks, CPM, CPC, outbound CTR, hook rate / hold rate / watch-through for videos, Triple Whale pixel results AND Meta's own reported purchases and ROAS (what Ads Manager and Moby show), which brief it rolls into, and an Ads Manager link. " +
       "Use this whenever the user gives an ad ID, or compares a number with Ads Manager or Triple Whale's Moby.",
     inputSchema: z.object({
       ad_id: z.string().regex(/^\d{6,25}$/).optional().describe("Meta ad ID, digits only."),
@@ -799,6 +900,7 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
             meta_reported_purchases: r.meta_reported_purchases,
             meta_reported_revenue: r2(r.meta_reported_revenue),
             meta_reported_roas: r2(ratio(r.meta_reported_revenue, r.spend)),
+            ...metaAdEngagement(data, r),
             thumbnail: r.image_url,
             ads_manager_url: adsManagerUrl(r.account_id, r.ad_id),
           };
@@ -850,6 +952,14 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
 // ---------------------------------------------------------------------------
 // Progress labels and date helpers
 // ---------------------------------------------------------------------------
+
+// One Meta ad's CPM / CPC / outbound CTR, plus hook and hold rate when it's a video.
+function metaAdEngagement(data: WindowData, r: LifetimeAdRow) {
+  const v = data.video.get(r.ad_id) ?? NO_VIDEO;
+  const e = emptyEngagement();
+  addEngagement(e, r, v);
+  return engagementOut(e, v.video_seconds);
+}
 
 // Same link shape as adRowUrl() in AdDetailModal: the ad's own account plus
 // the business id, without which Facebook redirects to the viewer's own account.
@@ -924,6 +1034,7 @@ How the data works — you need this to read the numbers correctly:
 - "All time" means roughly the last two years. A window counts only spend inside it, so a brief launched in June looks small in a September window.
 - Some spend can't be attributed to any brief (no DTC number in the Meta names, or a DTC number nobody created a card for). If totals look low, check unmatched_spend.
 - Tags (persona, problem, angle, concept, format...) are set by hand and can be blank. "concept" is mostly empty.
+- Creative metrics come from Meta's delivery data (via Triple Whale) and are on every perf block, creative and Meta ad. Hook rate = 3-second video views / impressions (does the opening stop the scroll). Hold rate = ThruPlays / 3-second views (of the people hooked, how many watched 15s or to the end). thruplay_rate = ThruPlays / impressions. of_3s_viewers_reached_pct is the watch-through curve (25/50/75/100% of the video). A brief's video figures cover only its video ads; video: null means no video ads in the window. Statics have no hook or hold rate: judge them on CTR, outbound CTR (clicks that left Meta for the site), CPC and CPM, then CVR and ROAS. A hook or hold rate on a few hundred impressions is noise; say so. When asked for these, show them; never say the dashboard lacks video metrics.
 
 How to answer:
 - Every number you state must come from a tool result in this conversation. Never estimate, extrapolate or fill a gap from general knowledge. If the data can't answer the question, say what's missing.

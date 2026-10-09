@@ -365,6 +365,60 @@ export async function fetchTripleWhaleAdsInRange(startDate: string, endDate: str
   return out;
 }
 
+// ---- Video + engagement ----
+// pixel_joined_tvf has no video columns; ads_table (Meta's own delivery data
+// as Triple Whale stores it) does. Its spend and impressions equal
+// pixel_joined_tvf's exactly (verified 2026-10-09: Oct 1–7, $284,323 /
+// 7,181,184 in both), so the two join cleanly on ad_id. Statics carry zero
+// video views, which is how a video is told apart: creative_format is null
+// on ~90% of spend and can't be relied on.
+const VIDEO_QUERY = `
+  SELECT
+    ad_id,
+    SUM(three_second_video_view) AS v3s,
+    SUM(thruplays)               AS v_thru,
+    SUM(video_p25_watched)       AS v_p25,
+    SUM(video_p50_watched)       AS v_p50,
+    SUM(video_p75_watched)       AS v_p75,
+    SUM(video_p100_watched)      AS v_p100,
+    SUM(outbound_clicks)         AS out_clicks,
+    max(video_duration)          AS v_duration
+  FROM ads_table
+  WHERE event_date BETWEEN @startDate AND @endDate
+    AND channel = '${META_CHANNEL}'
+  GROUP BY ad_id
+`;
+
+export interface VideoStats {
+  video_3s_views: number;
+  thruplays: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p100: number;
+  outbound_clicks: number;
+  video_seconds: number | null;
+}
+
+export async function fetchTripleWhaleVideoStats(startDate: string, endDate: string): Promise<Map<string, VideoStats>> {
+  const raw = await runSql<Record<string, unknown>>(VIDEO_QUERY, { startDate, endDate });
+  const out = new Map<string, VideoStats>();
+  for (const r of raw) {
+    if (r.ad_id == null) continue;
+    out.set(String(r.ad_id), {
+      video_3s_views: num(r.v3s),
+      thruplays: num(r.v_thru),
+      p25: num(r.v_p25),
+      p50: num(r.v_p50),
+      p75: num(r.v_p75),
+      p100: num(r.v_p100),
+      outbound_clicks: num(r.out_clicks),
+      video_seconds: num(r.v_duration) > 0 ? num(r.v_duration) : null,
+    });
+  }
+  return out;
+}
+
 // Whole-account Meta totals for one window — the baseline a month's briefs
 // are read against ("0.95 NC" means little without knowing the account ran 0.83).
 export async function fetchTripleWhalePeriodTotals(startDate: string, endDate: string) {
