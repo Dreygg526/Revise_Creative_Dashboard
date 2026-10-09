@@ -12,6 +12,7 @@ import {
   Settings as SettingsIcon,
   LogOut,
   Sparkles,
+  Award,
 } from "lucide-react";
 import { useAuth } from "@/app/hooks/useAuth";
 import LoginPage from "@/app/components/LoginPage";
@@ -26,6 +27,7 @@ import CopyAgentView from "@/app/components/views/CopyAgentView";
 import AnalyticsView from "@/app/components/views/AnalyticsView";
 import LearningsView from "@/app/components/views/LearningsView";
 import ReportsView from "@/app/components/views/ReportsView";
+import StrategistsView from "@/app/components/views/StrategistsView";
 import SettingsView from "@/app/components/views/SettingsView";
 import AskWidget from "@/app/components/ask/AskWidget";
 import AskChatProvider from "@/app/components/ask/AskChatProvider";
@@ -39,6 +41,7 @@ const NAV_ITEMS = [
   { key: "pipeline", label: "Pipeline", icon: LayoutGrid },
   { key: "myqueue", label: "My Queue", icon: ListChecks },
   { key: "analytics", label: "Analytics", icon: BarChart3 },
+  { key: "strategists", label: "Strategists", icon: Award },
   { key: "learnings", label: "Learnings", icon: Lightbulb },
   { key: "reports", label: "Reports", icon: FileText },
   { key: "copyagent", label: "Copy Agent", icon: PenLine },
@@ -85,6 +88,8 @@ export default function Home() {
         return <AnalyticsView />;
       case "learnings":
         return <LearningsView />;
+      case "strategists":
+        return <StrategistsView />;
       case "reports":
         return <ReportsView />;
       case "settings":
