@@ -1,5 +1,5 @@
 // ============================================================
-// REVISE CREATIVE DASHBOARD — TYPES
+// STANDARD CREATIVE DASHBOARD — TYPES
 // Mirrors the Supabase schema (phase1_schema.sql) one-to-one.
 // Location: app/types/index.ts
 // ============================================================

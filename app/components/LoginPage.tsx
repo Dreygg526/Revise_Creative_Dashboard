@@ -50,7 +50,7 @@ export default function LoginPage() {
       <div style={{ width: "100%", maxWidth: "380px" }}>
         {/* Brand */}
         <div style={{ marginBottom: "28px", textAlign: "center" }}>
-          <div style={{ fontSize: "18px", fontWeight: 600, letterSpacing: "-0.01em" }}>Revise</div>
+          <div style={{ fontSize: "18px", fontWeight: 600, letterSpacing: "-0.01em" }}>Standard</div>
           <div style={{ fontSize: "13px", color: "var(--text-muted)", marginTop: "2px" }}>Creative Dashboard</div>
         </div>
 

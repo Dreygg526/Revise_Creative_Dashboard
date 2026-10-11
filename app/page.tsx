@@ -129,7 +129,7 @@ export default function Home() {
               color: "var(--text)",
             }}
           >
-            Revise
+            Standard
           </div>
           <div
             style={{

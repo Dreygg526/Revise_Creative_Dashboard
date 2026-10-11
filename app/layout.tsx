@@ -10,7 +10,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Revise Creative Dashboard",
+  title: "Standard Creative Dashboard",
   description: "Internal creative operations dashboard",
 };
 
