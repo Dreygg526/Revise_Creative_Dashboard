@@ -9,7 +9,7 @@ has no session, so this is a separate entrance with a separate secret.
 
 ## Quick start
 
-**Base URL:** `https://revise-creative-dashboard.vercel.app`
+**Base URL:** `https://standardcreativedashboard.vercel.app` (the old `https://revise-creative-dashboard.vercel.app` still works and points at the same deployment)
 
 Every request carries the same header. One key, read and write:
 
@@ -38,7 +38,7 @@ curl -X POST \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"result":null}' \
-  "https://revise-creative-dashboard.vercel.app/api/agent/ads/677e870c-b0cb-453a-81b9-8ebe0087a394/result"
+  "https://standardcreativedashboard.vercel.app/api/agent/ads/677e870c-b0cb-453a-81b9-8ebe0087a394/result"
 ```
 
 If that returns `401`, the key is wrong. If it returns a plain HTML 404 page
@@ -97,7 +97,7 @@ without it, it just can't tell agent-set verdicts from human ones.
 
 ```bash
 curl -H "Authorization: Bearer $AGENT_API_KEY" \
-  "https://revise-creative-dashboard.vercel.app/api/agent/ads?stage=Ready%20to%20Launch"
+  "https://standardcreativedashboard.vercel.app/api/agent/ads?stage=Ready%20to%20Launch"
 ```
 
 `X-API-Key: <key>` works too, if that's easier to configure on the OpenClaw side.
@@ -223,7 +223,7 @@ curl -X POST \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"meta_ad_id":"120210000000000000"}' \
-  "https://revise-creative-dashboard.vercel.app/api/agent/ads/8f2c…/meta-ad-id"
+  "https://standardcreativedashboard.vercel.app/api/agent/ads/8f2c…/meta-ad-id"
 ```
 
 `id` is the `id` field from the GET response (a UUID), not the DTC number.
@@ -250,7 +250,7 @@ curl -X POST \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"result":"Winner","spend":412.55,"purchases":6,"cvr":1.8,"learning":"Hook B held to 3s at 2.1x ROAS over 9 days.","close":true}' \
-  "https://revise-creative-dashboard.vercel.app/api/agent/ads/8f2c…/result"
+  "https://standardcreativedashboard.vercel.app/api/agent/ads/8f2c…/result"
 ```
 
 ### Body
@@ -374,7 +374,7 @@ curl -X POST \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"stage":"Testing"}' \
-  "https://revise-creative-dashboard.vercel.app/api/agent/ads/8f2c…/stage"
+  "https://standardcreativedashboard.vercel.app/api/agent/ads/8f2c…/stage"
 ```
 
 ### Body
