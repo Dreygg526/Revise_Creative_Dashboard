@@ -9,6 +9,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Ad } from "@/app/types";
 import { fetchTripleWhaleLifetimeAds, fetchTripleWhalePeriodTotals } from "@/app/lib/tripleWhale";
 import { buildMonthlyReport, monthBounds, type MonthlyReportData, type ReportMode } from "@/app/lib/monthlyLearnings";
+import { loadKpis, resolveKpi, storeMonth } from "@/app/lib/kpi";
 
 // Axel's numbers, 2026-10-04: "$500 … and 0.95 nc". Overridable per run and
 // remembered in settings_targets so the next run (and the cron) reuse them.
@@ -28,7 +29,9 @@ export type LearningsSummary = z.infer<typeof SummarySchema>;
 // One write-up per view. Stored as this object in monthly_learnings.summary.
 export type LearningsSummaries = Record<ReportMode, LearningsSummary | null>;
 
-export async function loadThresholds(admin: SupabaseClient) {
+// The single rule that predates Monthly KPI. Now only the fallback for months
+// before the first monthly_kpi row (or a database without the table).
+export async function loadLegacyThresholds(admin: SupabaseClient) {
   const { data } = await admin
     .from("settings_targets")
     .select("key, value")
@@ -38,6 +41,14 @@ export async function loadThresholds(admin: SupabaseClient) {
     minSpend: Number(get(KEY_MIN_SPEND) ?? DEFAULT_MIN_SPEND),
     ncTarget: Number(get(KEY_NC_TARGET) ?? DEFAULT_NC_TARGET),
   };
+}
+
+// The winner rule for one month (default: the store's current month), from
+// Settings → Monthly KPI. See kpi.ts for how an unset month resolves.
+export async function loadThresholds(admin: SupabaseClient, month: string = storeMonth()) {
+  const [legacy, rows] = await Promise.all([loadLegacyThresholds(admin), loadKpis(admin)]);
+  const kpi = resolveKpi(rows, month, legacy);
+  return { minSpend: kpi.min_spend, ncTarget: kpi.nc_roas_target };
 }
 
 async function saveThreshold(admin: SupabaseClient, key: string, value: number) {
@@ -144,7 +155,10 @@ export async function runMonthlyLearnings(
   admin: SupabaseClient,
   opts: { month: string; generatedBy: string; minSpend?: number; ncTarget?: number }
 ): Promise<RunResult> {
-  const stored = await loadThresholds(admin);
+  // The month's own KPI. A rule typed into the Learnings view applies to this
+  // run; it is also remembered as the legacy fallback, which only matters for
+  // months with no Monthly KPI to resolve to.
+  const stored = await loadThresholds(admin, opts.month);
   const minSpend = opts.minSpend ?? stored.minSpend;
   const ncTarget = opts.ncTarget ?? stored.ncTarget;
   if (opts.minSpend != null && opts.minSpend !== stored.minSpend) await saveThreshold(admin, KEY_MIN_SPEND, minSpend);

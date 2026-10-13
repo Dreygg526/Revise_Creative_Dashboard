@@ -8,6 +8,7 @@ import { roleBadgeStyle } from "@/app/lib/roleStyles";
 import { useMyRole } from "@/app/hooks/useMyRole";
 import { can } from "@/app/lib/permissions";
 import ListsManager from "@/app/components/ListsManager";
+import MonthlyKpiManager from "@/app/components/MonthlyKpiManager";
 
 const ROLES = ["Founder", "Strategist", "Editor", "Media Buyer", "Graphic Designer"];
 
@@ -41,7 +42,7 @@ export default function SettingsView() {
       <div style={{ marginBottom: "24px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>Settings</h1>
         <p style={{ color: "var(--text-secondary)", marginTop: "4px", fontSize: "14px" }}>
-          Manage your team and dropdown lists.
+          Manage your team, the monthly KPI and dropdown lists.
         </p>
       </div>
 
@@ -159,6 +160,8 @@ export default function SettingsView() {
           </div>
         )}
       </div>
+
+      <MonthlyKpiManager />
 
       {/* Lists section */}
       <div>

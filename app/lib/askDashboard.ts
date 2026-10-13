@@ -47,6 +47,9 @@ export interface AskOptions {
   // The user ticked "skip confirmation": proposals are applied as soon as
   // they validate. Same validator, same permissions.
   autoApprove: boolean;
+  // Discord's /ask: no propose_changes tool at all. Discord can't tell which
+  // team member is asking, so it gets nothing that writes.
+  readOnly?: boolean;
 }
 
 export interface AskUsage {
@@ -200,6 +203,7 @@ interface Ctx {
   admin: SupabaseClient;
   user: AskOptions["user"];
   autoApprove: boolean;
+  readOnly: boolean;
   emit: (e: AskEvent) => void;
   // Every image URL a tool handed the model. The page renders only these, so
   // a made-up URL in an answer shows as text, not as a broken or foreign image.
@@ -946,7 +950,8 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
     },
   });
 
-  return [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, getMetaAd, spendByAccount, proposeChanges];
+  const read = [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, getMetaAd, spendByAccount];
+  return ctx.readOnly ? read : [...read, proposeChanges];
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,19 +1049,19 @@ How to answer:
 - Compare against the account baseline (account_trend) when judging whether something is good.
 - Lead with the direct answer in a sentence or two, then the supporting numbers. Use a compact markdown table when comparing three or more rows. Keep it short — strategists read this between tasks.
 
-Changing things:
+${ctx.readOnly ? `This conversation is in the team's Discord, which is read-only. You cannot change anything here. If they ask for a change, tell them to ask Ask AI in the dashboard, where it goes through an approval card. Discord shows no images or charts: link creatives instead of embedding them, and don't add chart blocks. The person asking is ${ctx.user.name ?? "a team member"}.` : `Changing things:
 - The person asking is ${ctx.user.name ?? ctx.user.email} (role: ${ctx.user.role ?? "none"}). They can change: ${editableFor(ctx.user.role)}. For anything else, tell them which role can.
 - Use propose_changes only when they ask for a change, or clearly agree to one you suggested. Never change things on your own initiative.
 - ${ctx.autoApprove ? "They turned confirmation off for this chat, so valid changes are written immediately. Say exactly what changed." : "Changes go to an approval card first. Nothing changes until they press Approve. Say so, and never claim it's done."}
 - Look up exact values first (list_tag_values, or get_brief for the card's current state). "Me" / "mine" means ${ctx.user.name ?? "the person asking"}.
-- You cannot delete or create cards. Moving into Testing goes through the pre-launch checklist on the card.
+- You cannot delete or create cards. Moving into Testing goes through the pre-launch checklist on the card.`}
 
-Pictures and charts:
+${ctx.readOnly ? "" : `Pictures and charts:
 - To show creatives, put markdown images on their own lines: ![DTC #12 top creative](URL). Only use URLs that came back from a tool (the "thumbnail" fields, or view_creatives). Never invent one. Show a few, not dozens.
 - When a chart says more than a table (a trend, or several groups side by side), add one fenced code block with language "chart" holding JSON:
   {"type": "bar" | "line", "title": "...", "x": ["label", ...], "series": [{"name": "...", "values": [number or null, ...]}], "format": "usd" | "ratio" | "pct" | "number"}
   One format per chart, so one axis: never mix spend and ROAS in one chart, make two. At most 4 series and 24 x labels. Every value must come from a tool result.
-- You can look at creatives with view_creatives and describe what you see, but you can't create or edit images.`;
+- You can look at creatives with view_creatives and describe what you see, but you can't create or edit images.`}`;
 }
 
 function editableFor(role: string | null): string {
@@ -1087,6 +1092,7 @@ export async function askDashboard(
     admin,
     user: opts.user,
     autoApprove: opts.autoApprove,
+    readOnly: !!opts.readOnly,
     emit,
     images: new Set(),
     ads: (ads ?? []) as Ad[],

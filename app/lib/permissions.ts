@@ -16,7 +16,8 @@ export type Action =
   | "manage_team"       // invite, change roles, remove members
   | "manage_lists"      // Settings dropdown lists
   | "review_ad"         // Approve / Request revision in Review stage
-  | "self_produce";     // Mark an ad as made without an editor (skips the Brief gate)
+  | "self_produce"      // Mark an ad as made without an editor (skips the Brief gate)
+  | "set_kpi";          // Settings → Monthly KPI (the winner rule per month)
 
 // Normalize: Graphic Designer is treated as Editor.
 function normalize(role: string | null): string {
@@ -38,6 +39,7 @@ const RULES: Record<Action, string[]> = {
   manage_lists:     ["Founder", "Strategist"],
   review_ad:        ["Founder", "Strategist", "Editor"], // Graphic Designer normalizes to Editor
   self_produce:     ["Founder", "Strategist"],           // deliberately NOT Editor — it would let them skip their own handoff
+  set_kpi:          ["Founder", "Media Buyer"],          // approved with the Discord reports, 2026-10-13; RLS enforces the same (can_set_kpi)
 };
 
 // The core check: can this role perform this action?

@@ -17,7 +17,8 @@ import {
   type LifetimeAdRow,
   type VideoStats,
 } from "@/app/lib/tripleWhale";
-import { loadThresholds, yesterday } from "@/app/lib/monthlyLearningsRun";
+import { loadLegacyThresholds, yesterday } from "@/app/lib/monthlyLearningsRun";
+import { loadKpis, resolveKpi, verdictUnder } from "@/app/lib/kpi";
 
 export const STRATEGIST_WINDOWS = [7, 30, 90] as const;
 export const UNASSIGNED = "Unassigned";
@@ -131,10 +132,11 @@ export async function buildStrategistReport(admin: SupabaseClient, days: number)
   const prevEnd = iso(endT - days * DAY);
   const prevStart = iso(endT - (2 * days - 1) * DAY);
 
-  const [adsRes, teamRes, rule, current, previous, lifetime, video] = await Promise.all([
+  const [adsRes, teamRes, legacy, kpis, current, previous, lifetime, video] = await Promise.all([
     admin.from("ads").select("*"),
     admin.from("team_members").select("name, role"),
-    loadThresholds(admin),
+    loadLegacyThresholds(admin),
+    loadKpis(admin),
     fetchTripleWhaleAdsInRange(start, end),
     fetchTripleWhaleAdsInRange(prevStart, prevEnd),
     // Lifetime rows give each brief its real launch date and the totals the
@@ -147,6 +149,11 @@ export async function buildStrategistReport(admin: SupabaseClient, days: number)
   ]);
   if (adsRes.error) throw new Error(adsRes.error.message);
   const ads = (adsRes.data ?? []) as Ad[];
+  // Each brief is judged by the Monthly KPI of the month it launched; the page
+  // header shows the rule for the window's last month.
+  const kpiFor = (month: string) => resolveKpi(kpis, month, legacy);
+  const endKpi = kpiFor(end.slice(0, 7));
+  const rule = { minSpend: endKpi.min_spend, ncTarget: endKpi.nc_roas_target };
   const roleOf = new Map((teamRes.data ?? []).map((t) => [String(t.name), String(t.role)]));
 
   const curBriefs = rollUp(current, ads);
@@ -208,7 +215,7 @@ export async function buildStrategistReport(admin: SupabaseClient, days: number)
     let verdict: BriefRow["verdict"] = null;
     if (launchedIn) {
       g.briefs_launched += 1;
-      verdict = lifeSpend < rule.minSpend ? "Too early" : (lifeNcRoas ?? 0) >= rule.ncTarget ? "Winner" : "Loser";
+      verdict = verdictUnder(kpiFor(launched!.slice(0, 7)), lifeSpend, lifeNc);
       if (verdict === "Winner") g.winners += 1;
       else if (verdict === "Loser") g.losers += 1;
       else g.too_early += 1;

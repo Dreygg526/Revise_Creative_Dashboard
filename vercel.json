@@ -1,5 +1,6 @@
 {
   "crons": [
-    { "path": "/api/cron/monthly-learnings", "schedule": "0 13 2 * *" }
+    { "path": "/api/cron/monthly-learnings", "schedule": "0 13 2 * *" },
+    { "path": "/api/cron/discord", "schedule": "0 0 * * *" }
   ]
 }

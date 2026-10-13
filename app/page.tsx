@@ -30,6 +30,7 @@ import ReportsView from "@/app/components/views/ReportsView";
 import StrategistsView from "@/app/components/views/StrategistsView";
 import SettingsView from "@/app/components/views/SettingsView";
 import AskWidget from "@/app/components/ask/AskWidget";
+import KpiReminderBanner from "@/app/components/KpiReminderBanner";
 import AskChatProvider from "@/app/components/ask/AskChatProvider";
 import AskHome from "@/app/components/ask/AskHome";
 import RecentChats from "@/app/components/ask/RecentChats";
@@ -224,6 +225,7 @@ export default function Home() {
 
       {/* ---------- MAIN CONTENT ---------- */}
       <main style={{ flex: 1, padding: "32px 40px", overflowY: "auto" }}>
+        {activeView !== "settings" && <KpiReminderBanner onOpen={() => setActiveView("settings")} />}
         {renderView()}
       </main>
 
