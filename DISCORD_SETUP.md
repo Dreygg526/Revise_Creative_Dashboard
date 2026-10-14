@@ -5,7 +5,7 @@ The code is in the dashboard. Four things switch it on, in this order. Nothing p
 
 Built on the suggested answer to each of the proposal's six decisions: KPI = **NC ROAS**; **Founder + Media Buyer**
 set it; potential ad = **$1,000 within 5 days** at or above KPI (+ $500 Watching); daily report = **final 2 days
-ago + early read of yesterday**; hit rate **every other Monday** (first one **Mon 19 Oct 2026**); channels
+ago + early read of yesterday**; hit rate **every Monday** (first one **Mon 19 Oct 2026**); channels
 **#daily-report, #creative-leads, #ask-ai**.
 
 ---

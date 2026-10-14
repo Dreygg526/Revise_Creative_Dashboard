@@ -29,6 +29,7 @@ import {
   type LifetimeAdRow,
 } from "@/app/lib/tripleWhale";
 import { loadLegacyThresholds } from "@/app/lib/monthlyLearningsRun";
+import { facebookAdLinks } from "@/app/lib/metaLinks";
 import { addDays, daysBetween, loadKpis, monthName, resolveKpi, storeDate, type ResolvedKpi } from "@/app/lib/kpi";
 import { COLOR, delta, dm, dmy, plain, ratio, usd, weekday, type DiscordMessage, type Embed, type EmbedField } from "@/app/lib/discord";
 
@@ -37,13 +38,6 @@ import { COLOR, delta, dm, dmy, plain, ratio, usd, weekday, type DiscordMessage,
 export const GROWTH_RULE = { minBefore: 200, minAfter: 300, minGrowth: 0.3, top: 5 };
 const TOP_BRIEFS = 5;
 const MAX_POTENTIAL = 6;
-
-const META_BUSINESS_ID = (process.env.NEXT_PUBLIC_META_BUSINESS_ID || "1888429485321387").trim();
-export function adsManagerUrl(account: string | null, adId: string): string | null {
-  const acct = (account ?? "").replace(/^act_/, "").trim();
-  if (!/^\d+$/.test(acct)) return null;
-  return `https://adsmanager.facebook.com/adsmanager/manage/ads?act=${acct}&business_id=${META_BUSINESS_ID}&global_scope_id=${META_BUSINESS_ID}&selected_ad_ids=${adId}`;
-}
 
 export interface DayFigures {
   date: string;
@@ -59,7 +53,7 @@ export interface CreativeLine {
   ad_name: string;
   dtc: number | null;
   brief: string | null;
-  url: string | null;
+  url: string | null;       // public Facebook link (metaLinks.ts), not Ads Manager: the team can't open that
   spend: number;
   nc_roas: number | null;
 }
@@ -128,7 +122,7 @@ export async function buildDailyReport(admin: SupabaseClient, reportDate: string
       ad_name: r.ad_name || "(no name)",
       dtc: b?.dtc_number ?? null,
       brief: b?.ad_name ?? null,
-      url: adsManagerUrl(r.account_id, r.ad_id),
+      url: null,   // filled below for the creatives the report actually lists
       spend,
       nc_roas: r2(nc, spend),
     };
@@ -169,6 +163,9 @@ export async function buildDailyReport(admin: SupabaseClient, reportDate: string
     .sort((a, b) => b.spend - a.spend);
   const potential = fresh.filter((x) => x.spend >= earlyKpi.potential_spend).slice(0, MAX_POTENTIAL);
   const watching = fresh.filter((x) => x.spend >= earlyKpi.watch_spend && x.spend < earlyKpi.potential_spend).slice(0, MAX_POTENTIAL);
+
+  const links = await facebookAdLinks([...growing, ...potential, ...watching].map((x) => x.ad_id));
+  for (const x of [...growing, ...potential, ...watching]) x.url = links.get(x.ad_id) ?? null;
 
   return {
     report_date: reportDate,
@@ -286,13 +283,13 @@ export function renderDailyReport(d: DailyReportData): DiscordMessage {
   const creative = (x: DailyReportData["potential"][number], i: number) =>
     `${i + 1}. **${plain(x.ad_name)}** (${dtcLabel(x)})\n` +
     `Launched ${dm(x.launched)} · **${usd(x.spend)} in ${x.days} day${x.days === 1 ? "" : "s"}** · NC ROAS **${ratio(x.nc_roas)}**` +
-    (x.url ? ` · [Ads Manager ↗](${x.url})` : "");
+    (x.url ? ` · [View ad ↗](${x.url})` : "");
   const potentialText = d.potential.length ? d.potential.map(creative).join("\n") : "None today.";
   const watchingText = d.watching.length
     ? d.watching
         .map((x) =>
           `${plain(x.ad_name)} (${dtcLabel(x)}) · ${usd(x.spend)} in ${x.days} day${x.days === 1 ? "" : "s"} · NC ${ratio(x.nc_roas)} · ` +
-          `${usd(k.potential_spend - x.spend)} from the potential line` + (x.url ? ` · [↗](${x.url})` : ""))
+          `${usd(k.potential_spend - x.spend)} from the potential line` + (x.url ? ` · [View ad ↗](${x.url})` : ""))
         .join("\n")
     : "Nothing yet.";
 

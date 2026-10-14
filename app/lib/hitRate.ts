@@ -1,5 +1,6 @@
-// Server-only: the creative hit rate, posted every other Monday to the
-// creative leads' private channel (approved 2026-10-13, proposal v2).
+// Server-only: the creative hit rate, posted every Monday to the creative
+// leads' private channel (approved 2026-10-13, proposal v2; weekly and the
+// $1,000 floor are Mickey's changes of 2026-10-14).
 //
 // Briefs launched 2–8 weeks before the report, so each has had time to spend.
 // Launch = the first day any of its Meta ads spent (the dashboard records no
@@ -7,7 +8,9 @@
 // the Monthly KPI of the month it LAUNCHED, so changing November's KPI never
 // rewrites September's winners.
 //
-//   Hit rate = winners ÷ (winners + losers). "Early" (under min spend) is
+//   Winner = NC ROAS ≥ the launch month's KPI target AND ≥ $1,000 spent since
+//   launch (HIT_MIN_SPEND; the KPI's own min spend only if it's higher).
+//   Hit rate = winners ÷ (winners + losers). "Early" (under that spend) is
 //   counted but never judged.
 //
 // Three tables: strategists (briefed to an editor), editors, and self-produced
@@ -24,16 +27,19 @@ import { addDays, addMonths, loadKpis, monthName, resolveKpi, storeDate, verdict
 import { COLOR, dmy, monoTable, type DiscordMessage, type EmbedField } from "@/app/lib/discord";
 
 export const HIT_RATE_WINDOW = { fromDaysAgo: 56, toDaysAgo: 14 };
+export const HIT_MIN_SPEND = 1000;
 
-// Every other Monday, counted from this one. 2026-10-19 is the first Monday
-// after approval. Override with DISCORD_HITRATE_ANCHOR (any Monday, YYYY-MM-DD).
+// Every Monday (store day), from this one on: 8 AM PH Monday, the week just
+// ended. Override with DISCORD_HITRATE_ANCHOR (any Monday, YYYY-MM-DD).
 const DEFAULT_ANCHOR = "2026-10-19";
 
 export function isHitRateDay(reportDate: string): boolean {
   const anchor = (process.env.DISCORD_HITRATE_ANCHOR || DEFAULT_ANCHOR).trim();
   const days = Math.round((Date.parse(`${reportDate}T00:00:00Z`) - Date.parse(`${anchor}T00:00:00Z`)) / 86_400_000);
-  return days >= 0 && days % 14 === 0;
+  return days >= 0 && days % 7 === 0;
 }
+
+const hitRule = <K extends { min_spend: number }>(k: K): K => ({ ...k, min_spend: Math.max(k.min_spend, HIT_MIN_SPEND) });
 
 export interface HitRow {
   name: string;
@@ -116,7 +122,7 @@ export async function buildHitRate(admin: SupabaseClient, reportDate: string = s
     const launched = rows.map((r) => r!.first_spend).sort()[0];
     const spend = rows.reduce((s, r) => s + r!.spend, 0);
     const nc = rows.reduce((s, r) => s + r!.nc_revenue, 0);
-    judged.push({ ad, launched, verdict: verdictUnder(resolveKpi(kpis, launched.slice(0, 7), legacy), spend, nc) });
+    judged.push({ ad, launched, verdict: verdictUnder(hitRule(resolveKpi(kpis, launched.slice(0, 7), legacy)), spend, nc) });
   }
 
   const thisMonth = reportDate.slice(0, 7);
@@ -126,7 +132,7 @@ export async function buildHitRate(admin: SupabaseClient, reportDate: string = s
 
   const ruleMonths = [...new Set([from.slice(0, 7), ...months])].sort();
   const rules = ruleMonths.map((m) => {
-    const k = resolveKpi(kpis, m, legacy);
+    const k = hitRule(resolveKpi(kpis, m, legacy));
     return `${monthName(m, "short")}: NC ROAS ≥ ${k.nc_roas_target} on ≥ $${k.min_spend.toLocaleString("en-US")}`;
   });
 
@@ -169,12 +175,12 @@ export function renderHitRate(d: HitRateData): DiscordMessage {
     embeds: [{
       title: `Creative hit rate · briefs launched ${dmy(d.from)} – ${dmy(d.to)}`,
       description:
-        "Launched 2–8 weeks ago, so every brief has had time to spend. Each brief is judged by its launch month's KPI " +
-        `(${d.rules.join(" · ")}), lifetime to yesterday. Hit rate = winners ÷ (winners + losers); "Early" = under the minimum spend so far, not judged. ` +
+        "Launched 2–8 weeks ago, so every brief has had time to spend. Winner = its launch month's KPI and $1,000+ spent since launch " +
+        `(${d.rules.join(" · ")}), lifetime to yesterday. Hit rate = winners ÷ (winners + losers); "Early" = under $1,000 spent so far, not judged. ` +
         `The month columns count winners by launch month across all of a person's briefs.`,
       color: COLOR.green,
       fields,
-      footer: { text: "Every other Monday, 8:00 AM PH · Triple Whale, Triple Attribution (lifetime) · all ad accounts · Founder's own briefs not included" },
+      footer: { text: "Every Monday, 8:00 AM PH · Triple Whale, Triple Attribution (lifetime) · all ad accounts · Founder's own briefs not included" },
     }],
   };
 }

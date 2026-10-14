@@ -8,7 +8,7 @@ import { postWebhook, webhookFor, DiscordError, type Channel, type DiscordMessag
 
 // The Discord reports (approved 2026-10-13). One Vercel Cron, daily at 00:00
 // UTC = 8:00 AM Philippines = ~10:30 AM Adelaide: the daily report every day,
-// plus the hit rate on every other Monday. One cron rather than two keeps it
+// plus the hit rate every Monday. One cron rather than two keeps it
 // inside any plan's cron limits and on one clock.
 //
 // Manual runs, with the same CRON_SECRET:
