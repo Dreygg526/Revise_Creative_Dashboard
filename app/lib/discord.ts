@@ -154,6 +154,9 @@ export function monoTable(header: string[], rows: (string | number)[][], align: 
 export function markdownForDiscord(md: string): string {
   let text = md.replace(/```chart[\s\S]*?```/g, "_(chart available in the dashboard's Ask AI)_");
   text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => `[${alt || "image"}](${url})`);
+  // The thin-evidence mark becomes "*" inside tables (see fitTable), so the
+  // prose that explains it has to say "*" too.
+  text = text.replace(/⚠️?/g, "*");
 
   const lines = text.split("\n");
   const out: string[] = [];
@@ -172,12 +175,57 @@ export function markdownForDiscord(md: string): string {
       i--;
       const [head, ...body] = rows;
       const numeric = head.map((_, c) => body.length > 0 && body.every((r) => /^[-$€£▲▼+]?[\d.,]+[%kKmMx]?$|^–$/.test(r[c] ?? "")));
-      out.push(monoTable(head, body, numeric.map((n) => (n ? "r" : "l"))));
+      out.push(fitTable(head, body, numeric.map((n) => (n ? "r" : "l"))));
     } else {
       out.push(lines[i]);
     }
   }
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// A code block wider than the embed wraps every row onto two lines (~58 chars
+// on desktop). Emoji are wider than a monospace cell and knock the columns out
+// of line, so they become "*". Then the label column is cut to LABEL_MAX, and
+// if it's still too wide the other columns are split across several tables,
+// each repeating the label, rather than dropping any data.
+const TABLE_MAX = 52;
+const LABEL_MAX = 22;
+
+function fitTable(head: string[], body: string[][], align: ("l" | "r")[]): string {
+  const clean = (s: string) => s.replace(/\p{Extended_Pictographic}️?/gu, "*").replace(/\s+\*/g, " *").trim();
+  // Keep a trailing "*" mark when the label is cut, or the cut hides it.
+  const cut = (s: string) => {
+    if (s.length <= LABEL_MAX) return s;
+    const mark = s.endsWith(" *") ? " *" : "";
+    const base = mark ? s.slice(0, -2) : s;
+    return base.slice(0, LABEL_MAX - 1 - mark.length).trimEnd() + "…" + mark;
+  };
+  const rows = body.map((r) => head.map((_, c) => clean(r[c] ?? "")));
+  const header = head.map(clean);
+  for (const r of [header, ...rows]) r[0] = cut(r[0]);
+
+  const width = (c: number) => Math.max(...[header, ...rows].map((r) => r[c].length));
+  const groups: number[][] = [];
+  let cur: number[] = [];
+  let used = width(0);
+  for (let c = 1; c < header.length; c++) {
+    const w = width(c) + 2;
+    if (cur.length && used + w > TABLE_MAX) {
+      groups.push(cur);
+      cur = [];
+      used = width(0);
+    }
+    cur.push(c);
+    used += w;
+  }
+  if (cur.length || !groups.length) groups.push(cur);
+
+  return groups
+    .map((g) => {
+      const cols = [0, ...g];
+      return monoTable(cols.map((c) => header[c]), rows.map((r) => cols.map((c) => r[c])), cols.map((c) => align[c]));
+    })
+    .join("\n");
 }
 
 // Split long text into embed-description-sized chunks on paragraph breaks,
