@@ -275,6 +275,11 @@ export async function applyChanges(
   user: EditUser,
   requests: ChangeRequest[]
 ): Promise<ValidationResult & { applied: boolean }> {
+  const fresh = requests.filter((r) => r.ad_id === NEW_CARD);
+  if (fresh.length) {
+    if (fresh.length !== requests.length) return { items: [], errors: ["Create the new card on its own, then edit others."], applied: false };
+    return createCard(admin, user, requests);
+  }
   const v = await validateChanges(admin, user, requests, true);
   if (v.errors.length || !v.items.length) return { ...v, applied: false };
 
@@ -290,4 +295,80 @@ export async function applyChanges(
     if (error) failures.push(error.message);
   }
   return { items: v.items, errors: failures, applied: failures.length === 0 };
+}
+
+// ---- New cards -----------------------------------------------------------------
+// Creating is offered for one case only: a new card in "Idea", from a brief
+// (Nemanja's ask, 2026-10-14), behind the same approval card. Items carry
+// ad_id NEW_CARD until written; the DTC number shown is a preview and is taken
+// fresh from the database at insert. Needs create_ad, plus each field's own
+// edit permission, exactly as filling in a new card by hand.
+
+export const NEW_CARD = "new";
+export const NEW_CARD_FIELDS = [
+  "ad_name", "product", "persona", "core_emotion", "problem", "awareness", "angle", "concept",
+  "format", "ad_type", "priority", "due_date", "brief_link", "notes", "assigned_strategist", "assigned_editor",
+] as const;
+
+async function nextDtc(admin: SupabaseClient): Promise<number> {
+  const { data } = await admin.from("ads").select("dtc_number").not("dtc_number", "is", null).order("dtc_number", { ascending: false }).limit(1);
+  return ((data?.[0]?.dtc_number as number | undefined) ?? 0) + 1;
+}
+
+export async function validateNewCard(
+  admin: SupabaseClient,
+  user: EditUser,
+  requests: { field: string; value: FieldValue }[]
+): Promise<ValidationResult> {
+  if (!can(user.role, "create_ad")) return { items: [], errors: [`You (${user.role ?? "no role"}) can't create cards. Founders, Strategists and Editors can.`] };
+  const [lk, dtc] = await Promise.all([loadLookups(admin), nextDtc(admin)]);
+  const errors: string[] = [];
+  const values = new Map<string, FieldValue>();
+  for (const r of requests) {
+    const spec = EDITABLE_FIELDS[r.field];
+    if (!spec || !(NEW_CARD_FIELDS as readonly string[]).includes(r.field)) {
+      errors.push(`“${r.field}” can't be set on a new card. Allowed: ${NEW_CARD_FIELDS.join(", ")}.`);
+      continue;
+    }
+    if (!can(user.role, spec.action)) {
+      errors.push(`You (${user.role ?? "no role"}) can't set ${spec.label.toLowerCase()}. Left out.`);
+      continue;
+    }
+    const c = coerce(spec, r.value, lk);
+    if ("error" in c) errors.push(`New card: ${c.error}`);
+    else if (c.value != null) values.set(r.field, c.value);
+  }
+  const name = values.get("ad_name");
+  if (!name) return { items: [], errors: [...errors, "A new card needs a name."] };
+  const draft = { assigned_strategist: values.get("assigned_strategist") ?? null, assigned_editor: values.get("assigned_editor") ?? null } as unknown as Ad;
+  if (isSelfProduced(draft) && !can(user.role, "self_produce")) {
+    values.delete("assigned_editor");
+    errors.push("Editor left out: making the strategist the editor marks it self-produced, which only Founders and Strategists can do.");
+  }
+  const items: ChangeItem[] = [
+    { ad_id: NEW_CARD, dtc, name: String(name), field: "stage", label: "Stage", from: null, to: "Idea" },
+    ...NEW_CARD_FIELDS.filter((f) => values.has(f)).map((f) => ({
+      ad_id: NEW_CARD, dtc, name: String(name), field: f, label: EDITABLE_FIELDS[f].label, from: null, to: values.get(f)!,
+    })),
+  ];
+  return { items, errors };
+}
+
+async function createCard(admin: SupabaseClient, user: EditUser, requests: ChangeRequest[]): Promise<ValidationResult & { applied: boolean }> {
+  const v = await validateNewCard(admin, user, requests.filter((r) => r.field !== "stage"));
+  // All or nothing, like edits: what was approved is exactly what gets written.
+  if (!v.items.length || v.errors.length) return { ...v, applied: false };
+  const row: Record<string, FieldValue> = { stage: "Idea", created_by: user.name };
+  for (const it of v.items) row[it.field] = it.to;
+  row.stage = "Idea";
+  // Number at insert; one retry if someone took it in the same moment.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const dtc = await nextDtc(admin);
+    const { data, error } = await admin.from("ads").insert([{ ...row, dtc_number: dtc }]).select("id, dtc_number").single();
+    if (!error && data) {
+      return { applied: true, errors: [], items: v.items.map((it) => ({ ...it, ad_id: data.id as string, dtc: data.dtc_number as number })) };
+    }
+    if (attempt === 1 || !/duplicate|unique/i.test(error?.message ?? "")) return { items: v.items, errors: [error?.message ?? "Insert failed."], applied: false };
+  }
+  return { items: v.items, errors: ["Insert failed."], applied: false };
 }

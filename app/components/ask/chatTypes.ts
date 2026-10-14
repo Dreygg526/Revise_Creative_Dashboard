@@ -22,6 +22,7 @@ export interface ChangeCard {
   skipped: string[];                        // changes the validator refused
   status: "pending" | "applying" | "applied" | "cancelled" | "undone" | "failed";
   message?: string;
+  created?: boolean;                        // a new card, not edits: no Undo (delete it from the board)
 }
 
 export interface Attachment {

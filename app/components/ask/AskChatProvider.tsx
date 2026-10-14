@@ -251,6 +251,7 @@ export default function AskChatProvider({ children }: { children: ReactNode }) {
                 skipped: e.errors ?? [],
                 // An "applied" event carries items only when the write succeeded.
                 status: e.type === "proposal" ? "pending" : e.items.length ? "applied" : "failed",
+                created: !!e.created,
               });
             } else if (e.type === "answer") {
               finish({
@@ -332,7 +333,12 @@ export default function AskChatProvider({ children }: { children: ReactNode }) {
           setCard(turnIndex, card.id, { status: direction === "apply" ? "pending" : "applied", message: msg });
           return;
         }
-        setCard(turnIndex, card.id, { status: direction === "apply" ? "applied" : "undone", message: undefined });
+        // A created card comes back with its real id and DTC number.
+        setCard(turnIndex, card.id, {
+          status: direction === "apply" ? "applied" : "undone",
+          message: undefined,
+          ...(card.created && Array.isArray(body.items) && body.items.length ? { items: body.items } : {}),
+        });
         fetchAds();
       } catch (e) {
         setCard(turnIndex, card.id, { status: direction === "apply" ? "pending" : "applied", message: e instanceof Error ? e.message : "Couldn't reach the server." });

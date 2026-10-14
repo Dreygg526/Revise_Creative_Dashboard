@@ -124,14 +124,20 @@ function ChangeCardView({
             {card.items.map((it, n) => (
               <tr key={n}>
                 <td style={{ padding: "4px 8px 4px 0", whiteSpace: "nowrap", verticalAlign: "top" }}>
-                  {it.dtc != null ? (
+                  {card.created && card.status !== "applied" ? (
+                    <span style={{ color: "var(--text-secondary)" }}>New · DTC #{it.dtc}</span>
+                  ) : it.dtc != null ? (
                     <button onClick={() => onDtc(it.dtc!)} style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "#7cb4ff", cursor: "pointer" }}>DTC #{it.dtc}</button>
                   ) : it.name}
                 </td>
                 <td style={{ padding: "4px 8px", color: "var(--text-secondary)", whiteSpace: "nowrap", verticalAlign: "top" }}>{it.label}</td>
                 <td style={{ padding: "4px 0 4px 8px", verticalAlign: "top" }}>
-                  <span style={{ color: "var(--text-muted)", textDecoration: card.status === "applied" ? "line-through" : "none" }}>{show(it.from)}</span>
-                  <span style={{ color: "var(--text-muted)" }}> → </span>
+                  {!card.created && (
+                    <>
+                      <span style={{ color: "var(--text-muted)", textDecoration: card.status === "applied" ? "line-through" : "none" }}>{show(it.from)}</span>
+                      <span style={{ color: "var(--text-muted)" }}> → </span>
+                    </>
+                  )}
                   <span style={{ color: "var(--text)" }}>{show(it.to)}</span>
                 </td>
               </tr>
@@ -149,7 +155,7 @@ function ChangeCardView({
 
       {pending && (
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
-          <button onClick={() => onApprove(skipNext)} style={btn(true)}>Approve {card.items.length > 1 ? `${card.items.length} changes` : "change"}</button>
+          <button onClick={() => onApprove(skipNext)} style={btn(true)}>{card.created ? "Create card" : `Approve ${card.items.length > 1 ? `${card.items.length} changes` : "change"}`}</button>
           <button onClick={onCancel} style={btn(false)}>Cancel</button>
           {!autoApprove && (
             <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-secondary)", marginLeft: "6px", cursor: "pointer" }}>
@@ -159,7 +165,12 @@ function ChangeCardView({
           )}
         </div>
       )}
-      {card.status === "applied" && (
+      {card.status === "applied" && card.created && (
+        <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "10px" }}>
+          Created in Idea. Click the DTC number to open it; delete it from the board if it isn’t wanted.
+        </div>
+      )}
+      {card.status === "applied" && !card.created && (
         <div style={{ marginTop: "10px" }}>
           <button onClick={onUndo} style={{ ...btn(false), padding: "4px 12px", fontSize: "12px" }}>Undo</button>
         </div>

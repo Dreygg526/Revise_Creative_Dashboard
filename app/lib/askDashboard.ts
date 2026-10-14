@@ -2,8 +2,8 @@
 // pipeline and its performance through tools.
 //
 // Every number the model quotes has to come out of a tool here. The tools
-// read the ads table (service role) and Triple Whale. The one tool that
-// writes, propose_changes, goes through askEdits.ts: the user's own
+// read the ads table (service role), Triple Whale and Drive brief folders.
+// The two tools that write, propose_changes and create_idea_card, go through askEdits.ts: the user's own
 // permissions, the pipeline gates, and an approval card unless they turned
 // confirmation off.
 // Performance uses the same path as the monthly learnings report — Triple
@@ -28,7 +28,8 @@ import {
 import { loadThresholds, yesterday } from "@/app/lib/monthlyLearningsRun";
 import { createdMonth } from "@/app/lib/adDates";
 import { randomUUID } from "node:crypto";
-import { applyChanges, validateChanges, EDITABLE_FIELDS, type ChangeItem, type EditUser } from "@/app/lib/askEdits";
+import { applyChanges, validateChanges, validateNewCard, EDITABLE_FIELDS, NEW_CARD, NEW_CARD_FIELDS, type ChangeItem, type EditUser } from "@/app/lib/askEdits";
+import { readBrief, BriefError } from "@/app/lib/briefReader";
 import { can } from "@/app/lib/permissions";
 
 export const ASK_MODEL = "claude-opus-5-5";
@@ -37,8 +38,8 @@ const MAX_ITERATIONS = 14;
 
 export type AskEvent =
   | { type: "tool"; label: string }
-  | { type: "proposal"; id: string; summary: string; items: ChangeItem[]; errors: string[] }
-  | { type: "applied"; id: string; summary: string; items: ChangeItem[]; errors: string[] }
+  | { type: "proposal"; id: string; summary: string; items: ChangeItem[]; errors: string[]; created?: boolean }
+  | { type: "applied"; id: string; summary: string; items: ChangeItem[]; errors: string[]; created?: boolean }
   | { type: "answer"; text: string; usage: AskUsage; images: string[] }
   | { type: "error"; error: string };
 
@@ -851,6 +852,84 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
     },
   });
 
+  const readBriefTool = betaZodTool({
+    name: "read_brief",
+    description:
+      "Open a Google Drive brief (a folder shared \"anyone with the link\", a file, or a Google Doc) and look at what's in it: the creatives as images, " +
+      "video cover frames, PDF first pages and the text of any Google Doc. Use it when the user pastes a Drive link, especially to create a card from it with create_idea_card. " +
+      "Also says whether a card already uses that link.",
+    inputSchema: z.object({ url: z.string().describe("The Google Drive link, exactly as the user gave it.") }),
+    run: async (input) => {
+      onCall("Opening the brief in Google Drive");
+      try {
+        const b = await readBrief(input.url);
+        const id = input.url.match(/\/(?:folders|d)\/([\w-]{10,})/)?.[1];
+        const already = id ? ctx.ads.filter((a) => (a.brief_link ?? "").includes(id)) : [];
+        const blocks: BetaToolResultContentBlockParam[] = [{
+          type: "text",
+          text: JSON.stringify({
+            folder_title: b.title,
+            files: b.entries.map((e) => `${e.name} (${e.kind})`),
+            already_on_cards: already.map((a) => `DTC #${a.dtc_number} (${a.ad_name}), stage ${a.stage}`),
+            notes: b.notes,
+          }),
+        }];
+        for (const d of b.docs) blocks.push({ type: "text", text: `Document "${d.name}":
+${d.text}` });
+        for (const img of b.images) {
+          blocks.push({ type: "text", text: `Image: ${img.name}` });
+          blocks.push({ type: "image", source: { type: "base64", media_type: img.media_type, data: img.data } });
+        }
+        return blocks;
+      } catch (e) {
+        return JSON.stringify({ error: e instanceof BriefError ? e.message : "Couldn't read that link." });
+      }
+    },
+  });
+
+  const NEW_FIELDS = [...NEW_CARD_FIELDS] as [string, ...string[]];
+  const createIdeaCard = betaZodTool({
+    name: "create_idea_card",
+    description:
+      "Create ONE new brief card in stage Idea, with its fields filled in (usually from a brief read with read_brief). The user sees every field on an approval card and must approve it " +
+      "(unless they turned confirmation off); the DTC number is assigned when it's created. Only for when the user asks for a new card. " +
+      "Use exact Settings list values (check list_tag_values for persona, problem, angle, core_emotion, awareness, product, format, ad_type) and leave a field out rather than guess. " +
+      "Always include brief_link (the link they gave) and ad_name.",
+    inputSchema: z.object({
+      summary: z.string().describe("One short line for the approval card, e.g. 'New Idea card from the \"White Men Sex\" brief'."),
+      fields: z.array(z.object({
+        field: z.enum(NEW_FIELDS),
+        value: z.union([z.string(), z.number()]),
+      })).min(1).max(20),
+    }),
+    run: async (input) => {
+      onCall("Preparing the new card");
+      const v = await validateNewCard(ctx.admin, ctx.user, input.fields);
+      // Fix-and-retry rather than show a card that would be refused on approve.
+      if (!v.items.length || v.errors.length) return JSON.stringify({ status: "rejected", errors: v.errors, note: "Nothing shown to the user. Fix these (or drop the field) and call again." });
+      const id = randomUUID();
+      if (ctx.autoApprove) {
+        const res = await applyChanges(ctx.admin, ctx.user, v.items.map((it) => ({ ad_id: NEW_CARD, field: it.field, value: it.to, expected: null })));
+        ctx.emit({ type: "applied", id, summary: input.summary, items: res.applied ? res.items : [], errors: [...v.errors, ...res.errors], created: true });
+        return JSON.stringify({
+          status: res.applied ? "created" : "failed",
+          dtc_number: res.applied ? res.items[0]?.dtc : null,
+          note: "Confirmation is off, so the card was created immediately in Idea.",
+          skipped: v.errors,
+          errors: res.errors,
+        });
+      }
+      ctx.emit({ type: "proposal", id, summary: input.summary, items: v.items, errors: v.errors, created: true });
+      return JSON.stringify({
+        status: "awaiting_approval",
+        note: "Shown as an approval card. NOTHING is created yet. Tell them to review the fields and approve; the card lands in Idea. The DTC number is a preview.",
+        proposed: v.items.map((i) => ({ field: i.field, value: i.to })),
+        preview_dtc: v.items[0]?.dtc,
+        skipped: v.errors,
+      });
+    },
+  });
+
   const getMetaAd = betaZodTool({
     name: "get_meta_ad",
     description:
@@ -951,7 +1030,7 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
   });
 
   const read = [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, getMetaAd, spendByAccount];
-  return ctx.readOnly ? read : [...read, proposeChanges];
+  return ctx.readOnly ? read : [...read, proposeChanges, readBriefTool, createIdeaCard];
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,7 +1133,8 @@ ${ctx.readOnly ? `This conversation is in the team's Discord, which is read-only
 - Use propose_changes only when they ask for a change, or clearly agree to one you suggested. Never change things on your own initiative.
 - ${ctx.autoApprove ? "They turned confirmation off for this chat, so valid changes are written immediately. Say exactly what changed." : "Changes go to an approval card first. Nothing changes until they press Approve. Say so, and never claim it's done."}
 - Look up exact values first (list_tag_values, or get_brief for the card's current state). "Me" / "mine" means ${ctx.user.name ?? "the person asking"}.
-- You cannot delete or create cards. Moving into Testing goes through the pre-launch checklist on the card.`}
+- You cannot delete cards. Moving into Testing goes through the pre-launch checklist on the card.
+- New cards from a brief: when they paste a Google Drive brief link and ask for a card (or "fill it in", "make an ad from this"), call read_brief, look at everything in it, then list_tag_values for the dimensions you'll set, then create_idea_card once. Fill only what the brief supports: a name in the team's style (short, like "White Men Sex" or "Woman Milk Thistle Aint Solution"; use the folder title when it is one), product, persona, problem, angle, core emotion, awareness, format (static vs video from the files), ad type, and notes summarising the creative (hook/headline text you can read, visual idea, number of variations). Assign ${ctx.user.name ?? "the person asking"} as strategist unless they say otherwise; leave editor empty. If already_on_cards isn't empty, say which card already has that brief and ask before creating a duplicate. After the card, say in one or two lines which fields you guessed from the visuals.`}
 
 ${ctx.readOnly ? "" : `Pictures and charts:
 - To show creatives, put markdown images on their own lines: ![DTC #12 top creative](URL). Only use URLs that came back from a tool (the "thumbnail" fields, or view_creatives). Never invent one. Show a few, not dozens.
