@@ -31,6 +31,7 @@ import { randomUUID } from "node:crypto";
 import { applyChanges, validateChanges, validateNewCard, EDITABLE_FIELDS, NEW_CARD, NEW_CARD_FIELDS, type ChangeItem, type EditUser } from "@/app/lib/askEdits";
 import { readBrief, BriefError } from "@/app/lib/briefReader";
 import { can } from "@/app/lib/permissions";
+import { fetchAdCopy } from "@/app/lib/metaCopy";
 
 export const ASK_MODEL = "claude-opus-5-5";
 const ALL_TIME_DAYS = 730; // same cap as the sync's "maximum"
@@ -52,6 +53,11 @@ export interface AskOptions {
   // team member is asking, so it gets nothing that writes.
   readOnly?: boolean;
 }
+
+// Where the tools are being called from. "mcp" is a person's own Claude Code
+// (app/api/mcp): no approval card exists there, Claude Code asks before each
+// tool call instead, so writes apply as soon as they validate.
+export type Surface = "web" | "discord" | "mcp";
 
 export interface AskUsage {
   input_tokens: number;
@@ -205,6 +211,7 @@ interface Ctx {
   user: AskOptions["user"];
   autoApprove: boolean;
   readOnly: boolean;
+  surface: Surface;
   emit: (e: AskEvent) => void;
   // Every image URL a tool handed the model. The page renders only these, so
   // a made-up URL in an answer shows as text, not as a broken or foreign image.
@@ -245,6 +252,26 @@ function resolveWindow(ctx: Ctx, start?: string, end?: string, account?: string)
   return { start: s, end: e, all_time: !start, account: acct, account_label: accountLabel(acct) };
 }
 
+// Triple Whale pulls, kept for 10 minutes per window. One question in the web
+// chat already shares them through ctx.windows; this also covers Claude Code
+// over MCP, where every tool call is its own request. Data ends yesterday, so
+// ten minutes can't make a figure stale in any way that matters.
+const RAW_TTL_MS = 10 * 60_000;
+const rawCache = new Map<string, { at: number; p: Promise<[LifetimeAdRow[], Map<string, VideoStats>]> }>();
+function rawWindow(start: string, end: string) {
+  const key = `${start}|${end}`;
+  const hit = rawCache.get(key);
+  if (hit && Date.now() - hit.at < RAW_TTL_MS) return hit.p;
+  const p = Promise.all([
+    fetchTripleWhaleAdsInRange(start, end),
+    fetchTripleWhaleVideoStats(start, end).catch(() => new Map<string, VideoStats>()),
+  ]);
+  p.catch(() => rawCache.delete(key));   // a failed pull isn't cached
+  rawCache.set(key, { at: Date.now(), p });
+  if (rawCache.size > 24) rawCache.delete(rawCache.keys().next().value!);
+  return p;
+}
+
 // With an account, only that account's Meta ads count: a brief that ran in
 // two accounts shows just its share in the one asked about.
 function windowData(ctx: Ctx, w: { start: string; end: string; account: string | null }): Promise<WindowData> {
@@ -255,10 +282,7 @@ function windowData(ctx: Ctx, w: { start: string; end: string; account: string |
     p = (async () => {
       // Video stats are a nice-to-have: if that table fails, answers lose
       // hook/hold rate rather than failing outright.
-      const [all, video] = await Promise.all([
-        fetchTripleWhaleAdsInRange(start, end),
-        fetchTripleWhaleVideoStats(start, end).catch(() => new Map<string, VideoStats>()),
-      ]);
+      const [all, video] = await rawWindow(start, end);
       const rows = account ? all.filter((r) => r.account_id === account) : all;
       const byMeta = new Map(rows.map((r) => [r.ad_id, r]));
       const { matches, unmatched } = matchInsights(rows, ctx.ads);
@@ -805,7 +829,9 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
     name: "propose_changes",
     description:
       "Change fields on one or more brief cards: tags, assignments, priority, due date, links, notes, stage moves, close-out result/learning/numbers. " +
-      "The user sees a before → after card and must approve it (unless they turned confirmation off). Every change is checked against the user's role and the pipeline gates, exactly like the ad card. " +
+      (ctx.surface === "mcp"
+        ? "Written as soon as it validates (Claude Code asks the user before running this tool). Every change is checked against the user's role and the pipeline gates, exactly like the ad card. "
+        : "The user sees a before → after card and must approve it (unless they turned confirmation off). Every change is checked against the user's role and the pipeline gates, exactly like the ad card. ") +
       "Cannot delete or create cards. Put all related changes in one call.",
     inputSchema: z.object({
       summary: z.string().describe("One short line describing the change, shown on the approval card."),
@@ -836,7 +862,10 @@ function buildTools(ctx: Ctx, onCall: (label: string) => void) {
         ctx.emit({ type: "applied", id, summary: input.summary, items: res.applied ? res.items : [], errors: [...v.errors, ...res.errors] });
         return JSON.stringify({
           status: res.applied ? "applied" : "failed",
-          note: "The user has confirmation turned off, so these were written immediately. They can undo from the card.",
+          note: ctx.surface === "mcp"
+            ? "Written to the dashboard. To undo, call this again with the old values (from → to is in `items`)."
+            : "The user has confirmation turned off, so these were written immediately. They can undo from the card.",
+          items: res.applied ? res.items.map((i) => ({ dtc: i.dtc, field: i.field, from: i.from, to: i.to })) : [],
           applied: res.applied ? res.items.length : 0,
           skipped: v.errors,
           errors: res.errors,
@@ -891,8 +920,11 @@ ${d.text}` });
   const createIdeaCard = betaZodTool({
     name: "create_idea_card",
     description:
-      "Create ONE new brief card in stage Idea, with its fields filled in (usually from a brief read with read_brief). The user sees every field on an approval card and must approve it " +
-      "(unless they turned confirmation off); the DTC number is assigned when it's created. Only for when the user asks for a new card. " +
+      "Create ONE new brief card in stage Idea, with its fields filled in (usually from a brief read with read_brief). " +
+      (ctx.surface === "mcp"
+        ? "It's created as soon as it validates (Claude Code asks the user before running this tool); the DTC number is assigned then. "
+        : "The user sees every field on an approval card and must approve it (unless they turned confirmation off); the DTC number is assigned when it's created. ") +
+      "Only for when the user asks for a new card. " +
       "Use exact Settings list values (check list_tag_values for persona, problem, angle, core_emotion, awareness, product, format, ad_type) and leave a field out rather than guess. " +
       "Always include brief_link (the link they gave) and ad_name.",
     inputSchema: z.object({
@@ -914,7 +946,7 @@ ${d.text}` });
         return JSON.stringify({
           status: res.applied ? "created" : "failed",
           dtc_number: res.applied ? res.items[0]?.dtc : null,
-          note: "Confirmation is off, so the card was created immediately in Idea.",
+          note: ctx.surface === "mcp" ? "Created in Idea on the dashboard." : "Confirmation is off, so the card was created immediately in Idea.",
           skipped: v.errors,
           errors: res.errors,
         });
@@ -1029,8 +1061,128 @@ ${d.text}` });
     },
   });
 
-  const read = [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, getMetaAd, spendByAccount];
-  return ctx.readOnly ? read : [...read, proposeChanges, readBriefTool, createIdeaCard];
+  const getAdCopy = betaZodTool({
+    name: "get_ad_copy",
+    description:
+      "The actual words on our Meta ads: every headline, primary text and description (all variants for dynamic-creative ads), with each ad's spend, NC ROAS and verdict. " +
+      "Give dtc_numbers for a brief's ads, meta_ad_ids for specific ads, or neither to get the best ads in the window (by NC ROAS among ads with at least min_spend, or by spend) — " +
+      "e.g. 'headlines from our top winners last month'. Brief filters (persona, angle, product…) narrow which ads count. Copy is read from Meta and only exists for Ad Account 12345 " +
+      "(nearly all spend since mid-July 2026); older ads come back with copy_error instead of copy.",
+    inputSchema: z.object({
+      ...FilterShape,
+      ...WindowShape,
+      meta_ad_ids: z.array(z.string().regex(/^\d{6,25}$/)).max(25).optional().describe("Specific Meta ad IDs."),
+      rank_by: z.enum(["nc_roas", "spend"]).optional().describe("How to pick ads when no IDs are given. Default nc_roas."),
+      min_spend: z.number().optional().describe("Ignore ads below this spend in the window. Default: the team's verdict minimum (0 when dtc_numbers are given)."),
+      limit: z.number().int().min(1).max(25).optional().describe("Ads to return, default 10."),
+    }),
+    run: async (input) => {
+      const w = resolveWindow(ctx, input.start, input.end, input.ad_account);
+      onCall(`Reading ad copy${describeFilters(input)} · ${describeWindow(w)}`);
+      const data = await windowData(ctx, w);
+      const limit = input.limit ?? 10;
+      let rows: Partial<LifetimeAdRow>[];
+      if (input.meta_ad_ids?.length) {
+        const want = new Set(input.meta_ad_ids);
+        rows = data.rows.filter((r) => want.has(r.ad_id));
+        // An ID with no spend in the window still has copy worth reading.
+        for (const id of want) if (!rows.some((r) => r.ad_id === id)) rows.push({ ad_id: id });
+      } else {
+        const briefs = new Set(applyFilters(ctx.ads, input).map((a) => a.id));
+        const minSpend = input.min_spend ?? (input.dtc_numbers?.length ? 0 : ctx.rule.minSpend);
+        const picked = data.rows.filter((r) => {
+          const b = data.briefOfMeta.get(r.ad_id);
+          return b != null && briefs.has(b) && r.spend > 0 && r.spend >= minSpend;
+        });
+        const by = input.rank_by ?? "nc_roas";
+        picked.sort((a, b) => (by === "spend" ? b.spend - a.spend : (ratio(b.nc_revenue, b.spend) ?? 0) - (ratio(a.nc_revenue, a.spend) ?? 0)));
+        rows = picked;
+      }
+      rows = rows.slice(0, limit);
+      const copy = await fetchAdCopy(rows.map((r) => r.ad_id!));
+      return json({
+        window: w,
+        rule: ctx.rule,
+        note: "Copy is from Meta (what actually ran). Numbers are Triple Whale pixel for this window. Several ads often share one copy; judge copy on ads with real spend.",
+        ads: rows.map((r) => {
+          const briefId = data.briefOfMeta.get(r.ad_id!);
+          const brief = briefId ? ctx.ads.find((a) => a.id === briefId) : undefined;
+          const c = copy.get(r.ad_id!);
+          const spend = r.spend ?? 0;
+          const nc = ratio(r.nc_revenue ?? 0, spend);
+          return {
+            meta_ad_id: r.ad_id,
+            ad_name: r.ad_name ?? null,
+            brief: brief ? { dtc: brief.dtc_number, name: brief.ad_name, persona: brief.persona, angle: brief.angle, product: brief.product } : null,
+            spend: r0(spend),
+            nc_roas: r2(nc),
+            roas: r2(ratio(r.revenue ?? 0, spend)),
+            ctr_pct: r2((r.impressions ?? 0) > 0 ? ((r.clicks ?? 0) / r.impressions!) * 100 : null),
+            verdict_by_rule: spend <= 0 ? "No spend" : spend < ctx.rule.minSpend ? "Too early" : (nc ?? 0) >= ctx.rule.ncTarget ? "Winner" : "Loser",
+            headlines: c?.headlines ?? [],
+            primary_texts: c?.primary_texts ?? [],
+            descriptions: c?.descriptions ?? [],
+            landing_url: c?.landing_url ?? null,
+            cta: c?.cta ?? null,
+            ...(c?.error ? { copy_error: c.error } : {}),
+          };
+        }),
+      });
+    },
+  });
+
+  const saveCopy = betaZodTool({
+    name: "save_copy",
+    description:
+      "Save headlines and ad copy you wrote to the dashboard's Copy Agent history (the history list on the Copy Agent page), under the user's name. " +
+      "Optionally also put the chosen ones on a brief card as its selected headline / selected ad copy (dtc_number + selected_headline / selected_ad_copy), checked against the user's role like any card edit. " +
+      "Only when the user asks to save or send copy to the dashboard.",
+    inputSchema: z.object({
+      title: z.string().min(1).max(120).describe("What this copy is for, e.g. 'Beer belly, liver angle, 10 reasons LP'."),
+      headlines: z.array(z.string().min(1).max(300)).max(30),
+      ad_copies: z.array(z.string().min(1).max(5000)).max(15),
+      product: z.string().max(120).optional(),
+      target_audience: z.string().max(300).optional(),
+      dtc_number: z.number().int().optional().describe("Also put the chosen headline / copy on this card."),
+      selected_headline: z.string().max(300).optional(),
+      selected_ad_copy: z.string().max(5000).optional(),
+    }),
+    run: async (input) => {
+      onCall("Saving copy to the dashboard");
+      if (!input.headlines.length && !input.ad_copies.length) return json({ error: "Nothing to save: give at least one headline or ad copy." });
+      const out: Record<string, unknown> = {};
+      const { error } = await ctx.admin.from("copy_history").insert({
+        ad_name: input.title,
+        generated_by: ctx.user.email,
+        generated_by_role: ctx.user.role,
+        headlines: input.headlines,
+        ad_copies: input.ad_copies,
+        input_type: "text",
+        input_preview: `Written in Claude Code by ${ctx.user.name ?? ctx.user.email}`,
+        product: input.product ?? null,
+        target_audience: input.target_audience ?? null,
+      });
+      out.copy_history = error ? { saved: false, error: error.message } : { saved: true, where: "Copy Agent page, history list" };
+      if (input.dtc_number != null && (input.selected_headline || input.selected_ad_copy)) {
+        const changes = [
+          ...(input.selected_headline ? [{ dtc_number: input.dtc_number, field: "selected_headline", value: input.selected_headline }] : []),
+          ...(input.selected_ad_copy ? [{ dtc_number: input.dtc_number, field: "selected_ad_copy", value: input.selected_ad_copy }] : []),
+        ];
+        const v = await validateChanges(ctx.admin, ctx.user, changes);
+        if (v.errors.length || !v.items.length) {
+          out.card = { updated: false, errors: v.errors.length ? v.errors : ["The card already has that copy."] };
+        } else {
+          const res = await applyChanges(ctx.admin, ctx.user, v.items.map((it) => ({ ad_id: it.ad_id, field: it.field, value: it.to, expected: it.from })));
+          out.card = res.applied ? { updated: true, dtc: input.dtc_number } : { updated: false, errors: res.errors };
+        }
+      }
+      return json(out);
+    },
+  });
+
+  const read = [searchBriefs, getBrief, compareGroups, accountTrend, unmatchedSpend, monthlyReport, tagValues, viewCreatives, getMetaAd, spendByAccount, getAdCopy];
+  if (ctx.readOnly) return read;
+  return ctx.surface === "mcp" ? [...read, proposeChanges, readBriefTool, createIdeaCard, saveCopy] : [...read, proposeChanges, readBriefTool, createIdeaCard];
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,20 +1311,15 @@ function editableFor(role: string | null): string {
 // answer only — not billing.
 const PRICE = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 };
 
-export async function askDashboard(
-  admin: SupabaseClient,
-  history: ChatTurn[],
-  emit: (e: AskEvent) => void,
-  opts: AskOptions
-): Promise<void> {
+async function loadCtx(admin: SupabaseClient, opts: AskOptions, surface: Surface, emit: (e: AskEvent) => void): Promise<Ctx> {
   const [{ data: ads, error }, rule] = await Promise.all([admin.from("ads").select("*"), loadThresholds(admin)]);
   if (error) throw new Error(`Couldn't load ads: ${error.message}`);
-
-  const ctx: Ctx = {
+  return {
     admin,
     user: opts.user,
     autoApprove: opts.autoApprove,
     readOnly: !!opts.readOnly,
+    surface,
     emit,
     images: new Set(),
     ads: (ads ?? []) as Ad[],
@@ -1180,6 +1327,23 @@ export async function askDashboard(
     rule,
     windows: new Map(),
   };
+}
+
+// The same tools for the MCP server (a person's own Claude Code). Writes go
+// through askEdits with that person's role and apply once they validate:
+// Claude Code's own per-tool permission prompt is the approval step.
+export async function dashboardTools(admin: SupabaseClient, user: AskOptions["user"]) {
+  const ctx = await loadCtx(admin, { user, autoApprove: true }, "mcp", () => {});
+  return { tools: buildTools(ctx, () => {}), rule: ctx.rule, asOf: ctx.asOf };
+}
+
+export async function askDashboard(
+  admin: SupabaseClient,
+  history: ChatTurn[],
+  emit: (e: AskEvent) => void,
+  opts: AskOptions
+): Promise<void> {
+  const ctx = await loadCtx(admin, opts, opts.readOnly ? "discord" : "web", emit);
   let toolCalls = 0;
   const tools = buildTools(ctx, (label) => {
     toolCalls++;

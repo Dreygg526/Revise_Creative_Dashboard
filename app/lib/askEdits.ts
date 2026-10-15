@@ -34,6 +34,9 @@ export const EDITABLE_FIELDS: Record<string, FieldSpec> = {
   awareness:           { label: "Awareness",     action: "edit_zone1",       kind: "list",   list: "awareness",    nullable: true },
   angle:               { label: "Angle",         action: "edit_zone1",       kind: "list",   list: "angle",        nullable: true },
   concept:             { label: "Concept",       action: "edit_zone1",       kind: "list",   list: "concept",      nullable: true },
+  // What the Copy Agent's "Send to Ad" writes; also set from Claude Code (save_copy).
+  selected_headline:   { label: "Selected headline", action: "edit_zone1",   kind: "text",   nullable: true },
+  selected_ad_copy:    { label: "Selected ad copy",  action: "edit_zone1",   kind: "text",   nullable: true },
   assigned_strategist: { label: "Strategist",    action: "edit_zone2",       kind: "person", nullable: true },
   assigned_editor:     { label: "Editor",        action: "edit_zone2",       kind: "person", nullable: true },
   assigned_media_buyer:{ label: "Media buyer",   action: "edit_zone2",       kind: "person", nullable: true },
