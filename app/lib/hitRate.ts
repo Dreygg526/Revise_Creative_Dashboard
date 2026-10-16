@@ -1,6 +1,7 @@
 // Server-only: the creative hit rate, posted every Monday to the creative
 // leads' private channel (approved 2026-10-13, proposal v2; weekly and the
-// $1,000 floor are Mickey's changes of 2026-10-14).
+// $1,000 floor are Mickey's changes of 2026-10-14; dropping "Early" his of
+// 2026-10-16).
 //
 // Briefs launched 2–8 weeks before the report, so each has had time to spend.
 // Launch = the first day any of its Meta ads spent (the dashboard records no
@@ -10,8 +11,9 @@
 //
 //   Winner = NC ROAS ≥ the launch month's KPI target AND ≥ $1,000 spent since
 //   launch (HIT_MIN_SPEND; the KPI's own min spend only if it's higher).
-//   Hit rate = winners ÷ (winners + losers). "Early" (under that spend) is
-//   counted but never judged.
+//   Hit rate = winners ÷ (winners + losers). Briefs under that spend are left
+//   out of the table entirely (Mickey, 2026-10-16: "just remove that part"),
+//   so Briefs = Win + Lose.
 //
 // Three tables: strategists (briefed to an editor), editors, and self-produced
 // briefs (strategist == editor, see isSelfProduced) on their own. The
@@ -46,7 +48,6 @@ export interface HitRow {
   briefs: number;
   winners: number;
   losers: number;
-  early: number;
   hit_rate: number | null;
   winners_by_month: Record<string, number>;   // YYYY-MM → winners among ALL this person's briefs launched that month
 }
@@ -77,7 +78,7 @@ function table(list: Judged[], key: (j: Judged) => string | null, from: string, 
   }
   const rows: HitRow[] = [];
   for (const [name, all] of groups) {
-    const inWindow = all.filter((j) => j.launched >= from && j.launched <= to);
+    const inWindow = all.filter((j) => j.launched >= from && j.launched <= to && j.verdict !== "Too early");
     const winners_by_month: Record<string, number> = {};
     for (const m of months) winners_by_month[m] = all.filter((j) => j.verdict === "Winner" && j.launched.startsWith(m)).length;
     if (!inWindow.length && !Object.values(winners_by_month).some(Boolean)) continue;
@@ -88,7 +89,6 @@ function table(list: Judged[], key: (j: Judged) => string | null, from: string, 
       briefs: inWindow.length,
       winners: w,
       losers: l,
-      early: inWindow.filter((j) => j.verdict === "Too early").length,
       hit_rate: w + l > 0 ? w / (w + l) : null,
       winners_by_month,
     });
@@ -150,14 +150,14 @@ export async function buildHitRate(admin: SupabaseClient, reportDate: string = s
 
 export function renderHitRate(d: HitRateData): DiscordMessage {
   const short = (m: string) => monthName(m, "short").split(" ")[0];
-  const header = ["Name", "Briefs", "Win", "Lose", "Early", "Hit", "│", ...d.months.map(short)];
-  const align: ("l" | "r")[] = ["l", "r", "r", "r", "r", "r", "l", ...d.months.map(() => "r" as const)];
+  const header = ["Name", "Briefs", "Win", "Lose", "Hit", "│", ...d.months.map(short)];
+  const align: ("l" | "r")[] = ["l", "r", "r", "r", "r", "l", ...d.months.map(() => "r" as const)];
   const block = (rows: HitRow[]) =>
     rows.length
       ? monoTable(
           header,
           rows.map((r) => [
-            r.name.slice(0, 14), r.briefs, r.winners, r.losers, r.early,
+            r.name.slice(0, 14), r.briefs, r.winners, r.losers,
             r.hit_rate == null ? "–" : `${Math.round(r.hit_rate * 100)}%`, "│",
             ...d.months.map((m) => r.winners_by_month[m] ?? 0),
           ]),
@@ -176,7 +176,7 @@ export function renderHitRate(d: HitRateData): DiscordMessage {
       title: `Creative hit rate · briefs launched ${dmy(d.from)} – ${dmy(d.to)}`,
       description:
         "Launched 2–8 weeks ago, so every brief has had time to spend. Winner = its launch month's KPI and $1,000+ spent since launch " +
-        `(${d.rules.join(" · ")}), lifetime to yesterday. Hit rate = winners ÷ (winners + losers); "Early" = under $1,000 spent so far, not judged. ` +
+        `(${d.rules.join(" · ")}), lifetime to yesterday. Hit rate = winners ÷ (winners + losers); briefs under $1,000 aren't counted. ` +
         `The month columns count winners by launch month across all of a person's briefs.`,
       color: COLOR.green,
       fields,
