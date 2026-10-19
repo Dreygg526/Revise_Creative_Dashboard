@@ -32,7 +32,15 @@ export async function POST(req: Request) {
     });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      // On a 5xx, auth-js stringifies the Response object, so the message is a
+      // bare "{}". For an invite that is almost always Supabase failing to send
+      // the email (SMTP), so say that instead.
+      const status = (error as { status?: number }).status ?? 0;
+      const msg = status >= 500 || !error.message || error.message === "{}"
+        ? `Supabase couldn't send the invite email (error ${status || "unknown"}). Check Authentication → Logs and the SMTP settings in Supabase, then try again.`
+        : error.message;
+      console.error("[invite]", email, status, error.message);
+      return NextResponse.json({ error: msg }, { status: 400 });
     }
 
     // 2) Create / upsert the team_members row (status = invited).
