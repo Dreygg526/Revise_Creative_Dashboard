@@ -267,16 +267,6 @@ export default function CopyAgentView() {
     throw new Error(`Gemini analysis failed (HTTP ${lastStatus}).`);
   }
 
-  async function analyzeUrlWithGemini(link: string): Promise<string> {
-    const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY || "";
-    if (!key) return "";
-    try {
-      return await geminiGenerate(key, {
-        contents: [{ parts: [{ text: `Open and analyze this ad / landing page URL: ${link}\n\nQuote every headline, body copy and caption you can read word for word. Then give: product and brand, hook, angle and emotional trigger, persona targeted, big promise and mechanism, proof and offer, structure from hook to CTA, tone and formatting (emojis, caps, bullets). Be specific.` }] }],
-        tools: [{ url_context: {} }],
-      });
-    } catch { return ""; }
-  }
 
   async function handleGenerate() {
     setError(null);
@@ -287,23 +277,22 @@ export default function CopyAgentView() {
     setSentToAd(false);
     setGenerating(true);
     try {
-      // Video and URL are watched / read by Gemini first; the copywriter gets
-      // its breakdown as `analysis`. Before 2026-10-20 neither tab called it, so
-      // the video tab sent nothing and the copy was written blind.
+      // A video is watched by Gemini first; the copywriter gets its breakdown as
+      // `analysis`. Before 2026-10-20 that was never called, so the video tab
+      // sent nothing and the copy was written blind. A URL is fetched by the
+      // server (`pageUrl`): Gemini's url_context was blocked by the test page
+      // and then invented the page's angle rather than saying so.
       let analysis: string | null = null;
       if (inputTab === "video" && videoFile) {
         setAnalyzingMedia(true);
         try { analysis = await analyzeVideoWithGemini(videoFile); } finally { setAnalyzingMedia(false); }
-      } else if (inputTab === "url") {
-        setAnalyzingMedia(true);
-        try { analysis = (await analyzeUrlWithGemini(url.trim())) || null; } finally { setAnalyzingMedia(false); }
       }
 
       const context = { product, targetAudience, controlCopy, inputType: inputTab };
       const body =
         analysis ? { analysis, ...context } :
         inputTab === "text" ? { competitorAd, ...context } :
-        inputTab === "url" ? { competitorAd: `Competitor ad URL: ${url}`, ...context } :
+        inputTab === "url" ? { pageUrl: url.trim(), ...context } :
         { imageBase64, imageMediaType, ...context };
 
       const res = await fetch("/api/generate-copy", {
@@ -531,7 +520,7 @@ export default function CopyAgentView() {
           {generating && (
             <div style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "10px", padding: "40px", textAlign: "center", color: "var(--text-muted)", minHeight: "300px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
               <div style={{ fontSize: "14px", color: "var(--text-secondary)" }}>
-                {uploadPct != null ? `Uploading video… ${uploadPct}%` : analyzingMedia ? (inputTab === "video" ? "Gemini is watching the video…" : "Reading the page…") : "Writing your copy from the breakdown and our winning ads…"}
+                {uploadPct != null ? `Uploading video… ${uploadPct}%` : analyzingMedia ? "Gemini is watching the video…" : inputTab === "url" ? "Reading the page and writing your copy…" : "Writing your copy from the breakdown and our winning ads…"}
               </div>
             </div>
           )}

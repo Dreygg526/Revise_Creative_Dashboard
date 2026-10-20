@@ -11,6 +11,56 @@ export const maxDuration = 120;
 const WINNERS_WINDOW_DAYS = 45;
 const WINNERS_LIMIT = 8;
 
+// Social links sit behind a login wall; neither we nor Gemini can read them.
+const SOCIAL_HOSTS = /(^|\.)(facebook|fb|instagram|tiktok|threads)\.(com|me|net)$/i;
+const PAGE_MAX_CHARS = 30_000;
+
+function isPrivateIp(ip: string): boolean {
+  if (ip.includes(":")) return ip === "::1" || /^f[cd]/i.test(ip) || /^fe80/i.test(ip) || ip.startsWith("::ffff:127.");
+  const [a, b] = ip.split(".").map(Number);
+  return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+}
+
+// The URL tab: fetch the page ourselves and hand Claude its real text. Gemini's
+// url_context was tried first and, when the site blocked it, made up the page's
+// angle instead of failing — so an unreadable page is an error here, never a guess.
+async function readPage(raw: string): Promise<{ text: string } | { error: string }> {
+  let url: URL;
+  try { url = new URL(raw.startsWith("http") ? raw : `https://${raw}`); } catch { return { error: "That doesn't look like a link." }; }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return { error: "Only http(s) links can be read." };
+  if (SOCIAL_HOSTS.test(url.hostname)) {
+    return { error: "Facebook, Instagram and TikTok links can't be opened (they need a login). Use a screenshot in the Image tab, the downloaded video in the Video tab, or paste the ad's text in the Text tab." };
+  }
+  // Members only, but still don't let the server be pointed at its own network.
+  try {
+    const { lookup } = await import("node:dns/promises");
+    const addrs = await lookup(url.hostname, { all: true });
+    if (!addrs.length || addrs.some((a) => isPrivateIp(a.address))) return { error: "That address can't be opened." };
+  } catch { return { error: `Couldn't find ${url.hostname}.` }; }
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(15_000),
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36", Accept: "text/html,*/*" },
+    });
+  } catch { return { error: "The page didn't answer in time." }; }
+  if (!res.ok) return { error: `The page returned HTTP ${res.status}${res.status === 404 ? " (it's gone or the link is wrong)" : res.status === 403 ? " (the site blocks automated reading)" : ""}. Try a screenshot in the Image tab instead.` };
+  const html = (await res.text()).slice(0, 3_000_000);
+  const meta = (name: string) => html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]+content=["']([^"']*)`, "i"))?.[1] ?? "";
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "";
+  const body = html
+    .replace(/<(script|style|noscript|svg|template)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<(br|\/p|\/div|\/h[1-6]|\/li|\/tr)[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&rsquo;|&lsquo;/g, "'").replace(/&ldquo;|&rdquo;/g, '"').replace(/&[a-z#0-9]+;/gi, " ")
+    .replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim();
+  if (body.length < 300) return { error: "That page has almost no readable text (it may load everything with JavaScript or block bots). Try a screenshot in the Image tab instead." };
+  const head = [title && `Title: ${title.trim()}`, meta("og:title") && `og:title: ${meta("og:title")}`, meta("description") && `Description: ${meta("description")}`].filter(Boolean).join("\n");
+  return { text: `${head}\nURL: ${res.url}\n\n${body.slice(0, PAGE_MAX_CHARS)}` };
+}
+
 interface CopyAd {
   brief?: { dtc?: number; name?: string; persona?: string; angle?: string } | null;
   spend?: number;
@@ -211,14 +261,20 @@ export async function POST(req: Request) {
     const auth = await requireMember(req, admin, null);
     if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
-    const { competitorAd, product, targetAudience, controlCopy, analysis, imageBase64, imageMediaType, inputType } = await req.json();
+    const input = await req.json();
+    const { product, targetAudience, controlCopy, analysis, imageBase64, imageMediaType, inputType, pageUrl } = input;
+    let competitorAd: string = input.competitorAd ?? "";
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
       return NextResponse.json({ error: "Server is missing the Anthropic API key." }, { status: 500 });
     }
 
+    // Page first: an unreadable link fails fast, before the winners lookup and Opus.
+    const page = typeof pageUrl === "string" && pageUrl ? await readPage(pageUrl) : null;
+    if (page && "error" in page) return NextResponse.json({ error: page.error }, { status: 422 });
     const winners = await winningCopy(auth.email);
+    if (page) competitorAd =`The text of a competitor's ad / landing page (scraped, so expect some menu and footer noise — focus on the ad copy):\n\n${page.text}`;
 
     const systemPrompt = `You are a world-class direct-response copywriter for DTC health and wellness brands. You write copy that makes people stop scrolling and buy.
 
