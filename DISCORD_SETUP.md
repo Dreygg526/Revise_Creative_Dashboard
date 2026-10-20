@@ -4,8 +4,8 @@ Approved by the boss 2026-10-13 (`Downloads/Revise dashboard - Discord reports p
 The code is in the dashboard. Four things switch it on, in this order. Nothing posts until step 3.
 
 Built on the suggested answer to each of the proposal's six decisions: KPI = **NC ROAS**; **Founder + Media Buyer**
-set it; potential ad = **$1,000 within 5 days** at or above KPI (+ $500 Watching); daily report = **final 2 days
-ago + early read of yesterday**; hit rate **every Monday** (first one **Mon 19 Oct 2026**); channels
+set it; potential ad = **$1,000 within 5 days** at or above KPI (+ $500 Watching); daily report = **yesterday, complete**
+(was final 2 days ago + early read of yesterday until 2026-10-20); hit rate **every Monday** (first one **Mon 19 Oct 2026**); channels
 **#daily-report, #creative-leads, #ask-ai**.
 
 ---
@@ -44,7 +44,7 @@ Vercel → project → **Settings → Environment Variables** → add each one f
 
 Then **Deployments → ⋯ on the latest → Redeploy** so the new values load.
 
-The cron (`vercel.json`) runs **daily at 00:00 UTC = 8:00 AM PH**. To send one right now instead of waiting:
+The cron (`vercel.json`) runs **daily at 09:00 UTC = 5:00 PM PH** (2 AM Los Angeles, the ad account's timezone; was 8 AM PH until 2026-10-20). To send one right now instead of waiting:
 
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" "https://revise-creative-dashboard.vercel.app/api/cron/discord?kind=daily"

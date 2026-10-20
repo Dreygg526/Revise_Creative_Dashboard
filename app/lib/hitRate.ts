@@ -31,7 +31,7 @@ import { COLOR, dmy, monoTable, type DiscordMessage, type EmbedField } from "@/a
 export const HIT_RATE_WINDOW = { fromDaysAgo: 56, toDaysAgo: 14 };
 export const HIT_MIN_SPEND = 1000;
 
-// Every Monday (store day), from this one on: 8 AM PH Monday, the week just
+// Every Monday (store day), from this one on: 5 PM PH Monday, the week just
 // ended. Override with DISCORD_HITRATE_ANCHOR (any Monday, YYYY-MM-DD).
 const DEFAULT_ANCHOR = "2026-10-19";
 

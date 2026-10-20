@@ -1,14 +1,18 @@
 // Server-only: the daily Discord report (approved 2026-10-13, proposal v2).
 //
-// Sent at 8:00 AM PH, which is ~10:30 AM in Adelaide, the store's timezone and
-// the clock Triple Whale's event_date runs on. Two days are reported because
-// the boss says data takes 1–2 days to load:
-//   FINAL       = 2 store days ago: the headline numbers, vs the same weekday
-//                 a week earlier.
-//   EARLY READ  = yesterday: spend is near-final by morning, revenue isn't, so
-//                 the ratios are labelled early.
-// Then yesterday's top briefs, the creatives Meta is scaling, and potential
-// ads (launched in the last N days, over the potential line at or above KPI).
+// Sent at 09:00 UTC = 5:00 PM PH = 2 AM Los Angeles, and it reports YESTERDAY
+// (store day, Adelaide) as final, vs the same weekday a week earlier. Then
+// yesterday's top briefs, the creatives Meta is scaling, and potential ads
+// (launched in the last N days, over the potential line at or above KPI).
+//
+// Why that hour (Axel's ask, 2026-10-20): revenue is bucketed on the store's
+// Adelaide clock, but spend comes from Meta on the AD ACCOUNT's clock, and
+// Ad Account 12345 (~96% of spend) is America/Los_Angeles. The first version
+// ran at 8 AM PH = 5 PM LA, before Meta's "yesterday" had ended, so
+// yesterday's spend read ~60–68% of final (daily_figures_log, 14–18 Oct) and
+// the report had to headline the day before. One hour after LA midnight the
+// day was already complete (19 Oct: $39,147 at 08:00 UTC vs $27,782 at 00:00).
+// Moving this back before ~08:00 UTC brings the gap back.
 //
 // Plain arithmetic, no AI: nothing here can be made up. Every number is
 // Triple Whale pixel, Triple Attribution lifetime, all Meta ad accounts, the
@@ -60,12 +64,9 @@ export interface CreativeLine {
 
 export interface DailyReportData {
   report_date: string;      // store day the report is sent on
-  final_day: string;
-  early_day: string;
-  final_kpi: ResolvedKpi;
-  early_kpi: ResolvedKpi;
-  final: { day: DayFigures; week_ago: DayFigures };
-  early: { day: DayFigures; week_ago: DayFigures };
+  day: string;              // the day reported: yesterday
+  kpi: ResolvedKpi;
+  figures: { day: DayFigures; week_ago: DayFigures };
   top_briefs: { dtc: number | null; name: string; spend: number; nc_roas: number | null }[];
   unmatched_spend: number;  // yesterday's spend no brief could claim
   growing: (CreativeLine & { before: number; growth: number })[];
@@ -88,24 +89,23 @@ function figures(rows: AccountDay[], date: string): DayFigures {
 }
 
 export async function buildDailyReport(admin: SupabaseClient, reportDate: string = storeDate()): Promise<DailyReportData> {
-  const early = addDays(reportDate, -1);
-  const final = addDays(reportDate, -2);
+  const day = addDays(reportDate, -1);
+  const dayBefore = addDays(reportDate, -2);
 
-  const [adsRes, legacy, kpis, account, earlyRows, finalRows, lifetime] = await Promise.all([
+  const [adsRes, legacy, kpis, account, dayRows, beforeRows, lifetime] = await Promise.all([
     admin.from("ads").select("*"),
     loadLegacyThresholds(admin),
     loadKpis(admin),
-    fetchTripleWhaleAccountDaily(addDays(final, -7), early),
-    fetchTripleWhaleAdsInRange(early, early),
-    fetchTripleWhaleAdsInRange(final, final),
+    fetchTripleWhaleAccountDaily(addDays(day, -7), day),
+    fetchTripleWhaleAdsInRange(day, day),
+    fetchTripleWhaleAdsInRange(dayBefore, dayBefore),
     // Lifetime rows carry each Meta ad's real first spend day (its launch) and
     // its totals so far, which is what "potential" is judged on.
-    fetchTripleWhaleLifetimeAds(early),
+    fetchTripleWhaleLifetimeAds(day),
   ]);
   if (adsRes.error) throw new Error(`Couldn't load ads: ${adsRes.error.message}`);
   const ads = (adsRes.data ?? []) as Ad[];
-  const earlyKpi = resolveKpi(kpis, early.slice(0, 7), legacy);
-  const finalKpi = resolveKpi(kpis, final.slice(0, 7), legacy);
+  const kpi = resolveKpi(kpis, day.slice(0, 7), legacy);
 
   // Meta ad → brief, decided once on lifetime rows so a creative maps to the
   // same brief in every section of the report.
@@ -131,7 +131,7 @@ export async function buildDailyReport(admin: SupabaseClient, reportDate: string
   // Yesterday's top briefs.
   const perBrief = new Map<string, { ad: Ad; spend: number; nc: number }>();
   let unmatched = 0;
-  for (const r of earlyRows) {
+  for (const r of dayRows) {
     const b = briefOf.get(r.ad_id);
     if (!b) { unmatched += r.spend; continue; }
     const cur = perBrief.get(b.id) ?? { ad: b, spend: 0, nc: 0 };
@@ -144,9 +144,9 @@ export async function buildDailyReport(admin: SupabaseClient, reportDate: string
     .slice(0, TOP_BRIEFS)
     .map((x) => ({ dtc: x.ad.dtc_number, name: x.ad.ad_name || "(untitled)", spend: x.spend, nc_roas: r2(x.nc, x.spend) }));
 
-  // Growing vs yesterday: early day against the day before it.
-  const before = new Map(finalRows.map((r) => [r.ad_id, r.spend]));
-  const growing = earlyRows
+  // Growing vs yesterday: the reported day against the day before it.
+  const before = new Map(beforeRows.map((r) => [r.ad_id, r.spend]));
+  const growing = dayRows
     .map((r) => ({ r, b: before.get(r.ad_id) ?? 0 }))
     .filter(({ r, b }) => b >= GROWTH_RULE.minBefore && r.spend >= GROWTH_RULE.minAfter && (r.spend - b) / b >= GROWTH_RULE.minGrowth)
     .sort((x, y) => (y.r.spend - y.b) / y.b - (x.r.spend - x.b) / x.b)
@@ -155,26 +155,23 @@ export async function buildDailyReport(admin: SupabaseClient, reportDate: string
 
   // Potential ads: launched within the KPI's window (counting yesterday as day
   // 1), at or above KPI on lifetime numbers, over the potential line.
-  const windowStart = addDays(early, -(earlyKpi.potential_days - 1));
+  const windowStart = addDays(day, -(kpi.potential_days - 1));
   const fresh = lifetime
-    .filter((r) => r.first_spend >= windowStart && r.first_spend <= early)
-    .map((r) => ({ ...line(r, r.spend, r.nc_revenue), launched: r.first_spend, days: daysBetween(r.first_spend, early) + 1 }))
-    .filter((x) => (x.nc_roas ?? 0) >= earlyKpi.nc_roas_target)
+    .filter((r) => r.first_spend >= windowStart && r.first_spend <= day)
+    .map((r) => ({ ...line(r, r.spend, r.nc_revenue), launched: r.first_spend, days: daysBetween(r.first_spend, day) + 1 }))
+    .filter((x) => (x.nc_roas ?? 0) >= kpi.nc_roas_target)
     .sort((a, b) => b.spend - a.spend);
-  const potential = fresh.filter((x) => x.spend >= earlyKpi.potential_spend).slice(0, MAX_POTENTIAL);
-  const watching = fresh.filter((x) => x.spend >= earlyKpi.watch_spend && x.spend < earlyKpi.potential_spend).slice(0, MAX_POTENTIAL);
+  const potential = fresh.filter((x) => x.spend >= kpi.potential_spend).slice(0, MAX_POTENTIAL);
+  const watching = fresh.filter((x) => x.spend >= kpi.watch_spend && x.spend < kpi.potential_spend).slice(0, MAX_POTENTIAL);
 
   const links = await facebookAdLinks([...growing, ...potential, ...watching].map((x) => x.ad_id));
   for (const x of [...growing, ...potential, ...watching]) x.url = links.get(x.ad_id) ?? null;
 
   return {
     report_date: reportDate,
-    final_day: final,
-    early_day: early,
-    final_kpi: finalKpi,
-    early_kpi: earlyKpi,
-    final: { day: figures(account, final), week_ago: figures(account, addDays(final, -7)) },
-    early: { day: figures(account, early), week_ago: figures(account, addDays(early, -7)) },
+    day,
+    kpi,
+    figures: { day: figures(account, day), week_ago: figures(account, addDays(day, -7)) },
     top_briefs,
     unmatched_spend: unmatched,
     growing,
@@ -183,11 +180,12 @@ export async function buildDailyReport(admin: SupabaseClient, reportDate: string
   };
 }
 
-// Every run records the two days it read, so the first test week can show how
-// far a day moves between its early read and its final read. Missing table =
-// no log, never a failed report.
+// Every run records the day it reported (kind "final"), so a later re-pull can
+// still show whether the day kept moving after the report went out. Rows of
+// kind "early" are from the 8 AM PH schedule (14–19 Oct). Missing table = no
+// log, never a failed report.
 export async function logDailyFigures(admin: SupabaseClient, d: DailyReportData): Promise<string | null> {
-  const row = (kind: "early" | "final", f: DayFigures) => ({
+  const row = (kind: "final", f: DayFigures) => ({
     report_date: d.report_date,
     day: f.date,
     kind,
@@ -197,7 +195,7 @@ export async function logDailyFigures(admin: SupabaseClient, d: DailyReportData)
     purchases: f.purchases,
     meta_revenue: f.meta_revenue,
   });
-  const { error } = await admin.from("daily_figures_log").insert([row("final", d.final.day), row("early", d.early.day)]);
+  const { error } = await admin.from("daily_figures_log").insert([row("final", d.figures.day)]);
   return error ? error.message : null;
 }
 
@@ -217,17 +215,17 @@ export function kpiLine(kpi: ResolvedKpi): string {
 }
 
 export function renderDailyReport(d: DailyReportData): DiscordMessage {
-  const F = d.final.day, Fw = d.final.week_ago, E = d.early.day, Ew = d.early.week_ago;
+  const F = d.figures.day, Fw = d.figures.week_ago;
   const short = (date: string) => weekday(date).slice(0, 3);
   const cpa = (f: DayFigures) => (f.purchases > 0 ? usd(f.spend / f.purchases) : "–");
   const noData = (f: DayFigures) => f.spend === 0;
 
   const fields: EmbedField[] = [];
   fields.push({
-    name: `✅ ${weekday(F.date)} (${dmy(F.date)}) · final`,
+    name: `✅ ${weekday(F.date)} (${dmy(F.date)}) · yesterday`,
     value: noData(F)
       ? "No Triple Whale data for this day yet."
-      : `Data fully loaded (2 days ago). Compared with last ${weekday(Fw.date)} (${dm(Fw.date)}).`,
+      : `Full day, US day included. Compared with last ${weekday(Fw.date)} (${dm(Fw.date)}).`,
   });
   if (!noData(F)) {
     fields.push(
@@ -235,22 +233,8 @@ export function renderDailyReport(d: DailyReportData): DiscordMessage {
       { name: "Revenue", value: `${usd(F.revenue)}\n${delta(F.revenue, Fw.revenue)} · last ${short(Fw.date)} ${usd(Fw.revenue)}`, inline: true },
       { name: "Purchases · CPA", value: `${Math.round(F.purchases).toLocaleString("en-US")} · ${cpa(F)}\nlast ${short(Fw.date)} ${Math.round(Fw.purchases).toLocaleString("en-US")} · ${cpa(Fw)}`, inline: true },
       { name: "ROAS", value: `${ratio(r2(F.revenue, F.spend))}\nlast ${short(Fw.date)} ${ratio(r2(Fw.revenue, Fw.spend))}`, inline: true },
-      { name: "NC ROAS", value: `${ratio(r2(F.nc_revenue, F.spend))}${tick(r2(F.nc_revenue, F.spend), d.final_kpi)}\nlast ${short(Fw.date)} ${ratio(r2(Fw.nc_revenue, Fw.spend))} · KPI ${d.final_kpi.nc_roas_target}`, inline: true },
+      { name: "NC ROAS", value: `${ratio(r2(F.nc_revenue, F.spend))}${tick(r2(F.nc_revenue, F.spend), d.kpi)}\nlast ${short(Fw.date)} ${ratio(r2(Fw.nc_revenue, Fw.spend))} · KPI ${d.kpi.nc_roas_target}`, inline: true },
       { name: "Meta ROAS", value: `${ratio(r2(F.meta_revenue, F.spend))}\nlast ${short(Fw.date)} ${ratio(r2(Fw.meta_revenue, Fw.spend))}`, inline: true },
-    );
-  }
-
-  fields.push({
-    name: `⏳ ${weekday(E.date)} (${dmy(E.date)}) · early read`,
-    value: noData(E)
-      ? "No Triple Whale data for yesterday yet."
-      : "Still loading. Spend is near-final; revenue and ROAS will move. Final numbers in tomorrow's report.",
-  });
-  if (!noData(E)) {
-    fields.push(
-      { name: "Spend", value: `${usd(E.spend)}\n${delta(E.spend, Ew.spend)} vs last ${short(Ew.date)}`, inline: true },
-      { name: "ROAS (early)", value: ratio(r2(E.revenue, E.spend)), inline: true },
-      { name: "NC ROAS (early)", value: ratio(r2(E.nc_revenue, E.spend)), inline: true },
     );
   }
 
@@ -258,7 +242,7 @@ export function renderDailyReport(d: DailyReportData): DiscordMessage {
     fields.push({
       name: "Top spenders (briefs)",
       value: d.top_briefs
-        .map((b, i) => `${i + 1}. **${b.dtc != null ? `DTC #${b.dtc}` : ""}** ${plain(b.name)} · ${usd(b.spend)} · NC ${ratio(b.nc_roas)}${tick(b.nc_roas, d.early_kpi)}`)
+        .map((b, i) => `${i + 1}. **${b.dtc != null ? `DTC #${b.dtc}` : ""}** ${plain(b.name)} · ${usd(b.spend)} · NC ${ratio(b.nc_roas)}${tick(b.nc_roas, d.kpi)}`)
         .join("\n") + (d.unmatched_spend >= 500 ? `\n_${usd(d.unmatched_spend)} of yesterday's spend isn't matched to any brief._` : ""),
     });
   }
@@ -267,19 +251,19 @@ export function renderDailyReport(d: DailyReportData): DiscordMessage {
     name: "📈 Growing vs yesterday (creatives Meta is scaling)",
     value: d.growing.length
       ? d.growing
-          .map((g, i) => `${i + 1}. ${plain(g.ad_name)} (${dtcLabel(g)}) · ${usd(g.before)} → ${usd(g.spend)} **+${Math.round(g.growth * 100)}%** · NC ${ratio(g.nc_roas)}${tick(g.nc_roas, d.early_kpi)}`)
+          .map((g, i) => `${i + 1}. ${plain(g.ad_name)} (${dtcLabel(g)}) · ${usd(g.before)} → ${usd(g.spend)} **+${Math.round(g.growth * 100)}%** · NC ${ratio(g.nc_roas)}${tick(g.nc_roas, d.kpi)}`)
           .join("\n")
       : `Nothing grew ${Math.round(GROWTH_RULE.minGrowth * 100)}%+ from ${usd(GROWTH_RULE.minBefore)}+ yesterday.`,
   });
 
   const main: Embed = {
     title: `Daily report · ${weekday(d.report_date)} ${dmy(d.report_date)}`,
-    description: kpiLine(d.early_kpi),
+    description: kpiLine(d.kpi),
     color: COLOR.blue,
     fields,
   };
 
-  const k = d.early_kpi;
+  const k = d.kpi;
   const creative = (x: DailyReportData["potential"][number], i: number) =>
     `${i + 1}. **${plain(x.ad_name)}** (${dtcLabel(x)})\n` +
     `Launched ${dm(x.launched)} · **${usd(x.spend)} in ${x.days} day${x.days === 1 ? "" : "s"}** · NC ROAS **${ratio(x.nc_roas)}**` +

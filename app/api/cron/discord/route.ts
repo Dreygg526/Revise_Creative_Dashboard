@@ -6,8 +6,10 @@ import { buildDailyReport, logDailyFigures, renderDailyReport } from "@/app/lib/
 import { buildHitRate, isHitRateDay, renderHitRate } from "@/app/lib/hitRate";
 import { postWebhook, webhookFor, DiscordError, type Channel, type DiscordMessage } from "@/app/lib/discord";
 
-// The Discord reports (approved 2026-10-13). One Vercel Cron, daily at 00:00
-// UTC = 8:00 AM Philippines = ~10:30 AM Adelaide: the daily report every day,
+// The Discord reports (approved 2026-10-13). One Vercel Cron, daily at 09:00
+// UTC = 5:00 PM Philippines = 2 AM Los Angeles, once the ad account's (LA)
+// day is over so yesterday is complete (moved from 8 AM PH 2026-10-20, see
+// dailyReport.ts): the daily report every day,
 // plus the hit rate every Monday. One cron rather than two keeps it
 // inside any plan's cron limits and on one clock.
 //
