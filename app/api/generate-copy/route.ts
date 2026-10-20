@@ -1,4 +1,66 @@
 import { NextResponse } from "next/server";
+import type { BetaRunnableTool } from "@anthropic-ai/sdk/lib/tools/BetaRunnableTool";
+import { requireMember, serviceClient } from "@/app/lib/apiAuth";
+import { ASK_MODEL, dashboardTools } from "@/app/lib/askDashboard";
+import { memberFor } from "@/app/lib/mcpServer";
+
+// Pulling our winners' copy (Triple Whale + Meta) adds ~5-15s before Opus writes.
+export const maxDuration = 120;
+
+// How far back "our winning ads" reaches, and how many are shown to the model.
+const WINNERS_WINDOW_DAYS = 45;
+const WINNERS_LIMIT = 8;
+
+interface CopyAd {
+  brief?: { dtc?: number; name?: string; persona?: string; angle?: string } | null;
+  spend?: number;
+  nc_roas?: number | null;
+  headlines?: string[];
+  primary_texts?: string[];
+  copy_error?: string;
+}
+
+// The real headlines and primary texts of our best ads by NC ROAS, through
+// Ask AI's own get_ad_copy tool, so "winning" means the same thing as in the
+// chat. Best effort: any failure just means no examples, never no copy.
+async function winningCopy(email: string): Promise<string> {
+  try {
+    const admin = serviceClient();
+    if (!admin) return "";
+    const member = await memberFor(admin, email);
+    if (!member) return "";
+    const { tools } = await dashboardTools(admin, member);
+    const tool = tools.find((t) => t.name === "get_ad_copy") as BetaRunnableTool<unknown> | undefined;
+    if (!tool) return "";
+    const start = new Date(Date.now() - WINNERS_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+    const out = await Promise.race([
+      // The tool's max. Most top ads share one primary text (2026-10-20: 12 of
+      // the top 12), so pull wide to find WINNERS_LIMIT distinct ones.
+      tool.run(tool.parse({ start, rank_by: "nc_roas", limit: 25 })),
+      new Promise<null>((r) => setTimeout(() => r(null), 40_000)),
+    ]);
+    if (typeof out !== "string") return "";
+    const ads = ((JSON.parse(out) as { ads?: CopyAd[] }).ads ?? []).filter((a) => !a.copy_error && a.primary_texts?.length);
+    const seen = new Set<string>();
+    const lines: string[] = [];
+    for (const a of ads) {
+      const body = a.primary_texts![0];
+      if (seen.has(body)) continue; // several ads often share one copy
+      seen.add(body);
+      const b = a.brief;
+      lines.push(
+        `--- ${b?.dtc ? `DTC #${b.dtc} (${b.name ?? ""})` : "Ad"} · NC ROAS ${a.nc_roas ?? "?"} on $${a.spend ?? 0}${b?.persona ? ` · persona: ${b.persona}` : ""}${b?.angle ? ` · angle: ${b.angle}` : ""}\n` +
+          `Headlines: ${(a.headlines ?? []).slice(0, 3).join(" | ") || "(none)"}\n` +
+          `Primary text:\n${body.slice(0, 1500)}`
+      );
+      if (lines.length >= WINNERS_LIMIT) break;
+    }
+    return lines.join("\n\n");
+  } catch (e) {
+    console.warn("[generate-copy] winning copy unavailable:", e instanceof Error ? e.message : e);
+    return "";
+  }
+}
 
 // Full copy-formula library (the ~50-brand "copy DNA") — kept server-side.
 const PROVEN_COPY_FORMULAS = `
@@ -143,12 +205,20 @@ FORMATTING RULES:
 
 export async function POST(req: Request) {
   try {
-    const { competitorAd, product, targetAudience, controlCopy, analysis, imageBase64, imageMediaType } = await req.json();
+    // Session first, before anything about server config (same rule as every route).
+    const admin = serviceClient();
+    if (!admin) return NextResponse.json({ error: "Server is missing its database key." }, { status: 500 });
+    const auth = await requireMember(req, admin, null);
+    if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+
+    const { competitorAd, product, targetAudience, controlCopy, analysis, imageBase64, imageMediaType, inputType } = await req.json();
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
       return NextResponse.json({ error: "Server is missing the Anthropic API key." }, { status: 500 });
     }
+
+    const winners = await winningCopy(auth.email);
 
     const systemPrompt = `You are a world-class direct-response copywriter for DTC health and wellness brands. You write copy that makes people stop scrolling and buy.
 
@@ -188,11 +258,21 @@ CRITICAL OUTPUT RULES:
 - The entire response must be parseable by JSON.parse()
 - Format: {"headlines":["headline 1","headline 2","headline 3"],"ad_copies":["full ad copy 1","full ad copy 2","full ad copy 3"]}
 - Never mention competitor brands by name.
-- If you write anything outside the JSON object, you have failed.`;
+- If you write anything outside the JSON object, you have failed.
+
+IF THE VIDEO IS OUR OWN AD (The Standard Lab / our NAC product is what's shown):
+- Don't borrow a formula — write the primary text that runs WITH this video.
+- Open on the same hook the video opens on, echo its voiceover lines and on-screen claims, keep the same persona and angle, and land on the same offer/CTA. The copy and the video must read as one ad.
+
+OUR WINNING ADS:
+- If examples of our own top ads by NC ROAS are given, they are the house style that actually converts for our customers (mostly men and women 40+ with liver, belly-fat, bloating and drinking worries).
+- Match their voice, length, structure, emoji use and the way they open and close. Don't copy them line for line, and don't reuse their exact headlines.`;
 
     const contextInfo = `Product: ${product || "same product category as the competitor ad"}
 Target Audience: ${targetAudience || "same target audience as the competitor ad"}
-${controlCopy ? `Previous Winning Copy (make new copy different enough): ${controlCopy}` : ""}`;
+${controlCopy ? `Previous Winning Copy (make new copy different enough): ${controlCopy}` : ""}${
+      winners ? `\n\nOUR TOP ADS BY NC ROAS, LAST ${WINNERS_WINDOW_DAYS} DAYS (real copy from Meta — write like these):\n\n${winners}` : ""
+    }`;
 
     // Build the user message. Image goes as a vision block; everything else as text.
     let userContent: unknown;
@@ -202,7 +282,8 @@ ${controlCopy ? `Previous Winning Copy (make new copy different enough): ${contr
         { type: "text", text: `This is a competitor's winning ad. Analyze their formula, tone, formatting, and emotional angle. Then write 3 headlines and 3 full ad copies for our product using the best proven formula.\n\n${contextInfo}` },
       ];
     } else if (analysis) {
-      userContent = `A competitor's winning ad was analyzed:\n\n${analysis}\n\n${contextInfo}\n\nUsing this analysis, pick the best proven formula and write 3 headlines and 3 ad copies for our product.`;
+      const source = inputType === "video" ? "A video ad was watched and broken down (transcript, on-screen text, scenes)" : "An ad was analyzed";
+      userContent = `${source}:\n\n${analysis}\n\n${contextInfo}\n\nFirst decide whether this is our own ad or a competitor's. Then write 3 headlines and 3 ad copies for our product — matching the video if it's ours, borrowing the winning formula if it's a competitor's.`;
     } else {
       userContent = `Competitor's winning ad copy:\n${competitorAd}\n\nAnalyze their formula — emotional trigger, formatting, tone, structure. Pick the best proven formula and write 3 headlines and 3 ad copies for our product.\n\n${contextInfo}`;
     }
@@ -215,8 +296,8 @@ ${controlCopy ? `Previous Winning Copy (make new copy different enough): ${contr
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
-        max_tokens: 2500,
+        model: ASK_MODEL,
+        max_tokens: 8000,
         system: systemPrompt,
         messages: [{ role: "user", content: userContent }],
       }),
@@ -228,7 +309,11 @@ ${controlCopy ? `Previous Winning Copy (make new copy different enough): ${contr
     }
 
     const data = await response.json();
-    const raw = data.content?.[0]?.text || "";
+    // The first block isn't always text (thinking can come first), so take the text ones.
+    const raw = ((data.content ?? []) as { type: string; text?: string }[])
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("");
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       return NextResponse.json({ error: "No valid JSON in the AI response." }, { status: 502 });

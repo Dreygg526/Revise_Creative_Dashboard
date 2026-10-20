@@ -27,6 +27,25 @@ const GEMINI_MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 const VIDEO_ACCEPT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 // Chunk size for the resumable upload. Multiple of 256KB, per Google's protocol.
 const UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024;
+// Tried in order: preview models get retired, so a 404 on one falls through to
+// the next rather than breaking the tab. Checked against the key 2026-10-20.
+const GEMINI_MODELS = ["gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-2.5-pro"];
+
+// What Gemini must pull out of a video. Written for both competitor ads and
+// our own creatives: the copywriter needs the actual words and beats, not a
+// summary, so the copy can echo the hook and voiceover.
+const VIDEO_ANALYSIS_PROMPT = `You are breaking down a Facebook/Instagram video ad so a copywriter can write the ad's headline and primary text. Watch AND listen to the whole video. Be exhaustive and literal — quote, don't summarise.
+
+Return these sections:
+1. PRODUCT & BRAND: what is being sold, by whom, what form (capsule, gummy, drink…). Say if it looks like a NAC / liver supplement from The Standard Lab.
+2. HOOK (0–3s): exactly what is seen and said/shown in the first 3 seconds, and why it stops the scroll.
+3. FULL VOICEOVER / DIALOGUE TRANSCRIPT: word for word, with rough timestamps. Say "no voiceover" if none.
+4. ON-SCREEN TEXT: every caption, title card and text overlay, word for word, with timestamps.
+5. SCENE-BY-SCENE: each shot/beat with timestamp, what's on screen, and its job (hook, problem, agitation, mechanism, proof, offer, CTA).
+6. FORMAT & STYLE: UGC / talking head / podcast clip / doctor / skit / slideshow / animation, who the speaker is (age, gender, persona), pacing, music, tone.
+7. ANGLE & EMOTION: the core problem, the emotional trigger, the persona targeted, the big promise, and the unique mechanism claimed.
+8. PROOF & OFFER: testimonials, stats, studies, before/after, guarantees, discounts, urgency, the CTA.
+9. WHY IT WORKS: 3–5 bullet points on the persuasion that a copywriter should carry into the primary text.`;
 
 const sectionTitle: React.CSSProperties = {
   fontSize: "11px", fontWeight: 600, color: "var(--text-muted)",
@@ -217,28 +236,45 @@ export default function CopyAgentView() {
     }
     if (!active) throw new Error(`Video processing timed out after ${Math.round(maxWaitMs / 60_000)} minutes. Try a shorter or smaller video.`);
 
-    const genRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [ { file_data: { mime_type: mimeType, file_uri: fileUri } }, { text: `Analyze this competitor video ad. Extract: 1) hook style (first 3 seconds), 2) emotional angle, 3) tone, 4) persuasion technique, 5) any visible text/captions, 6) narrative structure (hook to CTA), 7) formatting patterns (emojis, caps, bullets). Be specific — this will be used to write new ad copy for a different product using the same winning formula.${videoNote ? " Extra context: " + videoNote : ""}` } ] }] }) }
-    );
-    if (!genRes.ok) throw new Error("Gemini analysis failed.");
-    const genData = await genRes.json();
-    const analysis = genData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const analysis = await geminiGenerate(key, {
+      contents: [{ parts: [
+        { file_data: { mime_type: mimeType, file_uri: fileUri } },
+        { text: VIDEO_ANALYSIS_PROMPT + (videoNote ? `\n\nExtra context from the user: ${videoNote}` : "") },
+      ] }],
+    });
     if (!analysis) throw new Error("Gemini returned an empty analysis.");
     return analysis;
+  }
+
+  // One generateContent call, walking GEMINI_MODELS past any model this key
+  // can't use. Joins every text part: thinking models can split the answer.
+  async function geminiGenerate(key: string, body: object): Promise<string> {
+    let lastStatus = 0;
+    for (const model of GEMINI_MODELS) {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const parts: { text?: string; thought?: boolean }[] = data.candidates?.[0]?.content?.parts ?? [];
+        return parts.filter((p) => p.text && !p.thought).map((p) => p.text).join("\n").trim();
+      }
+      lastStatus = res.status;
+      // Only a missing / unavailable model is worth trying the next one for.
+      if (res.status !== 404 && res.status !== 400 && res.status !== 503) break;
+    }
+    throw new Error(`Gemini analysis failed (HTTP ${lastStatus}).`);
   }
 
   async function analyzeUrlWithGemini(link: string): Promise<string> {
     const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY || "";
     if (!key) return "";
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: `Visit and analyze this competitor ad URL: ${link}. Extract hook style, emotional angle, tone, persuasion technique, visible copy, narrative structure, and formatting patterns. Be specific.` }] }], tools: [{ url_context: {} }] }) }
-      );
-      if (!res.ok) return "";
-      const data = await res.json();
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      return await geminiGenerate(key, {
+        contents: [{ parts: [{ text: `Open and analyze this ad / landing page URL: ${link}\n\nQuote every headline, body copy and caption you can read word for word. Then give: product and brand, hook, angle and emotional trigger, persona targeted, big promise and mechanism, proof and offer, structure from hook to CTA, tone and formatting (emojis, caps, bullets). Be specific.` }] }],
+        tools: [{ url_context: {} }],
+      });
     } catch { return ""; }
   }
 
@@ -251,14 +287,31 @@ export default function CopyAgentView() {
     setSentToAd(false);
     setGenerating(true);
     try {
+      // Video and URL are watched / read by Gemini first; the copywriter gets
+      // its breakdown as `analysis`. Before 2026-10-20 neither tab called it, so
+      // the video tab sent nothing and the copy was written blind.
+      let analysis: string | null = null;
+      if (inputTab === "video" && videoFile) {
+        setAnalyzingMedia(true);
+        try { analysis = await analyzeVideoWithGemini(videoFile); } finally { setAnalyzingMedia(false); }
+      } else if (inputTab === "url") {
+        setAnalyzingMedia(true);
+        try { analysis = (await analyzeUrlWithGemini(url.trim())) || null; } finally { setAnalyzingMedia(false); }
+      }
+
+      const context = { product, targetAudience, controlCopy, inputType: inputTab };
       const body =
-        inputTab === "text" ? { competitorAd, product, targetAudience, controlCopy } :
-        inputTab === "url" ? { competitorAd: `Competitor ad URL: ${url}`, product, targetAudience, controlCopy } :
-        { imageBase64, imageMediaType, product, targetAudience, controlCopy };
+        analysis ? { analysis, ...context } :
+        inputTab === "text" ? { competitorAd, ...context } :
+        inputTab === "url" ? { competitorAd: `Competitor ad URL: ${url}`, ...context } :
+        { imageBase64, imageMediaType, ...context };
 
       const res = await fetch("/api/generate-copy", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
         body: JSON.stringify(body),
       });
       const json = await res.json();
@@ -477,7 +530,9 @@ export default function CopyAgentView() {
 
           {generating && (
             <div style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "10px", padding: "40px", textAlign: "center", color: "var(--text-muted)", minHeight: "300px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-              <div style={{ fontSize: "14px", color: "var(--text-secondary)" }}>Writing your copy…</div>
+              <div style={{ fontSize: "14px", color: "var(--text-secondary)" }}>
+                {uploadPct != null ? `Uploading video… ${uploadPct}%` : analyzingMedia ? (inputTab === "video" ? "Gemini is watching the video…" : "Reading the page…") : "Writing your copy from the breakdown and our winning ads…"}
+              </div>
             </div>
           )}
 
