@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import type { BetaRunnableTool } from "@anthropic-ai/sdk/lib/tools/BetaRunnableTool";
-import { requireMember, serviceClient } from "@/app/lib/apiAuth";
+import { requireAgentKey, requireMember, serviceClient } from "@/app/lib/apiAuth";
 import { ASK_MODEL, dashboardTools } from "@/app/lib/askDashboard";
-import { memberFor } from "@/app/lib/mcpServer";
+import { memberFor, type McpUser } from "@/app/lib/mcpServer";
 
 // Pulling our winners' copy (Triple Whale + Meta) adds ~5-15s before Opus writes.
 export const maxDuration = 120;
@@ -73,12 +73,10 @@ interface CopyAd {
 // The real headlines and primary texts of our best ads by NC ROAS, through
 // Ask AI's own get_ad_copy tool, so "winning" means the same thing as in the
 // chat. Best effort: any failure just means no examples, never no copy.
-async function winningCopy(email: string): Promise<string> {
+async function winningCopy(member: McpUser | null): Promise<string> {
   try {
     const admin = serviceClient();
-    if (!admin) return "";
-    const member = await memberFor(admin, email);
-    if (!member) return "";
+    if (!admin || !member) return "";
     const { tools } = await dashboardTools(admin, member);
     const tool = tools.find((t) => t.name === "get_ad_copy") as BetaRunnableTool<unknown> | undefined;
     if (!tool) return "";
@@ -258,11 +256,22 @@ export async function POST(req: Request) {
     // Session first, before anything about server config (same rule as every route).
     const admin = serviceClient();
     if (!admin) return NextResponse.json({ error: "Server is missing its database key." }, { status: 500 });
-    const auth = await requireMember(req, admin, null);
-    if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+    // Two doors: a signed-in member (the Copy Agent page), or Axel's OpenClaw with
+    // AGENT_API_KEY, which calls this for every ad it launches. The agent key only
+    // ever reads here (get_ad_copy), so it gets a read-only stand-in, not a team row.
+    let member: McpUser | null;
+    if (requireAgentKey(req).ok) {
+      member = { email: "agent", role: null, name: "OpenClaw" };
+    } else {
+      const auth = await requireMember(req, admin, null);
+      if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+      member = await memberFor(admin, auth.email);
+    }
 
     const input = await req.json();
-    const { product, targetAudience, controlCopy, analysis, imageBase64, imageMediaType, inputType, pageUrl } = input;
+    // OpenClaw sends the old copy as `previousWinningCopy`; the page sends `controlCopy`.
+    const controlCopy: string = input.controlCopy || input.previousWinningCopy || "";
+    const { product, targetAudience, analysis, imageBase64, imageMediaType, inputType, pageUrl } = input;
     let competitorAd: string = input.competitorAd ?? "";
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -273,7 +282,7 @@ export async function POST(req: Request) {
     // Page first: an unreadable link fails fast, before the winners lookup and Opus.
     const page = typeof pageUrl === "string" && pageUrl ? await readPage(pageUrl) : null;
     if (page && "error" in page) return NextResponse.json({ error: page.error }, { status: 422 });
-    const winners = await winningCopy(auth.email);
+    const winners = await winningCopy(member);
     if (page) competitorAd =`The text of a competitor's ad / landing page (scraped, so expect some menu and footer noise — focus on the ad copy):\n\n${page.text}`;
 
     const systemPrompt = `You are a world-class direct-response copywriter for DTC health and wellness brands. You write copy that makes people stop scrolling and buy.

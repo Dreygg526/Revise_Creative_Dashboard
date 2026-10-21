@@ -498,3 +498,11 @@ so a prober can't learn whether the integration is switched on.
   requirement a person would have had to satisfy either.
 - **The key is a full read of the pipeline.** Treat it like a password. If it
   leaks, rotate it — see Setup.
+
+## `POST /api/generate-copy`
+
+The Copy Agent. Not under `/api/agent/`, but it takes the same key (`Authorization: Bearer <AGENT_API_KEY>` or `X-API-Key`) as well as a signed-in session. Between 2026-10-20 and 2026-10-21 it accepted only a session, which is what broke OpenClaw's launches.
+
+Body (all optional, JSON): `product`, `targetAudience`, `competitorAd` (text), `previousWinningCopy` (or `controlCopy`; the new copy is kept different from it), plus `analysis` / `inputType: "video"` for a video breakdown, `imageBase64` + `imageMediaType` for an image, `pageUrl` for a landing page the server reads itself.
+
+Response: `{ "headlines": [3], "ad_copies": [3] }`. Takes ~30-40s (it first pulls our top ads' real copy by NC ROAS as house style, then Opus 5.5 writes). Set your HTTP timeout to at least 120s. Errors: 401 bad key, 422 unreadable `pageUrl`, 502 model failure.
