@@ -103,7 +103,7 @@ export default function Composer({ variant, autoFocus = false }: { variant: "her
           }}
           placeholder={turns.length ? "Ask a follow-up…" : "Ask anything about your briefs, creatives and performance…"}
           rows={1}
-          maxLength={2000}
+          maxLength={20000}
           style={{
             width: "100%", resize: "none", border: "none", outline: "none", background: "transparent", color: "var(--text)",
             fontSize: big ? "16px" : "14px", fontFamily: "inherit", lineHeight: 1.5, padding: big ? "2px 4px 10px" : "4px 4px 8px",

@@ -11,7 +11,9 @@ export const maxDuration = 300;
 
 const MAX_TURNS = 30;
 const MAX_TURN_CHARS = 20_000;
-const MAX_QUESTION_CHARS = 2_000;
+// Same as a turn: people paste whole briefs and wish lists in here (Anirudh hit
+// the old 2,000 on 2026-10-22, and the textarea silently stopped typing).
+const MAX_QUESTION_CHARS = MAX_TURN_CHARS;
 // Size is capped by Vercel (4.5MB request body), which the page stays under by
 // downscaling images and dropping old attachments; this caps the count.
 const MAX_ATTACHMENTS = 8;
