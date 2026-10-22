@@ -10,10 +10,9 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const MAX_TURNS = 30;
-const MAX_TURN_CHARS = 20_000;
-// Same as a turn: people paste whole briefs and wish lists in here (Anirudh hit
-// the old 2,000 on 2026-10-22, and the textarea silently stopped typing).
-const MAX_QUESTION_CHARS = MAX_TURN_CHARS;
+// No character cap on questions or turns, on purpose: people paste whole briefs
+// and wish lists (Anirudh hit the old 2,000 on 2026-10-22). Vercel's 4.5MB body
+// limit is the only ceiling.
 // Size is capped by Vercel (4.5MB request body), which the page stays under by
 // downscaling images and dropping old attachments; this caps the count.
 const MAX_ATTACHMENTS = 8;
@@ -50,7 +49,6 @@ export async function POST(req: Request) {
     if (t?.role !== expected || typeof t.content !== "string" || !t.content.trim()) {
       return jsonError("messages must alternate user / assistant, starting with user, each with text.", 400);
     }
-    if (t.content.length > MAX_TURN_CHARS) return jsonError("One of the messages is too long.", 400);
     const turn: ChatTurn = { role: expected, content: t.content };
     if (t.attachments != null) {
       if (expected !== "user" || !Array.isArray(t.attachments)) return jsonError("Only your own messages can carry attachments.", 400);
@@ -69,9 +67,6 @@ export async function POST(req: Request) {
   }
   if (attachmentCount > MAX_ATTACHMENTS) return jsonError(`At most ${MAX_ATTACHMENTS} attachments per conversation request.`, 400);
   if (history[history.length - 1].role !== "user") return jsonError("The last message must be your question.", 400);
-  if (history[history.length - 1].content.length > MAX_QUESTION_CHARS) {
-    return jsonError(`Keep the question under ${MAX_QUESTION_CHARS} characters.`, 400);
-  }
 
   const autoApprove = body?.auto_approve === true;
   const { data: me } = await admin.from("team_members").select("name").eq("email", auth.email).maybeSingle();
