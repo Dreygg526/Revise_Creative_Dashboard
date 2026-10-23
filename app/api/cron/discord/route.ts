@@ -52,11 +52,24 @@ export async function GET(req: Request) {
     jobs.push({ name: "hitrate", channel: "leads", build: async () => ({ msg: renderHitRate(await buildHitRate(admin, date)) }) });
   }
 
+  // A Triple Whale query that hangs once (55s timeout) cost the whole 22 Oct
+  // daily report; the same query ran in seconds the next day. So a 504 or 5xx
+  // from Triple Whale gets one more try (a build is ~15s, maxDuration is 300s).
+  const buildWithRetry = async (job: (typeof jobs)[number]) => {
+    try {
+      return await job.build();
+    } catch (e) {
+      if (!(e instanceof TripleWhaleError) || e.status < 500) throw e;
+      console.warn(`[discord] ${job.name} retrying after Triple Whale error: ${e.message}`);
+      return job.build();
+    }
+  };
+
   // Each report independently: a failed hit rate must not cost the daily one.
   const results = await Promise.all(
     jobs.map(async (job) => {
       try {
-        const { msg, log } = await job.build();
+        const { msg, log } = await buildWithRetry(job);
         if (dry) return { report: job.name, ok: true, posted: false, message: msg };
         const hook = webhookFor(job.channel);
         if (!hook.url) {
