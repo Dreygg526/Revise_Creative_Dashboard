@@ -247,12 +247,19 @@ export function renderDailyReport(d: DailyReportData): DiscordMessage {
     });
   }
 
+  // The link was looked up but never shown until 2026-10-23, when three lines
+  // read "VARIATION 1 - PDP (DTC #409)": copies share a name, so the link is the
+  // only way to tell them apart. Dropped if the field would pass Discord's
+  // 1,024 characters, since fitEmbed's cut would break a link mid-URL.
+  const growingText = (withLinks: boolean) =>
+    d.growing
+      .map((g, i) => `${i + 1}. ${plain(g.ad_name)} (${dtcLabel(g)}) · ${usd(g.before)} → ${usd(g.spend)} **+${Math.round(g.growth * 100)}%** · NC ${ratio(g.nc_roas)}${tick(g.nc_roas, d.kpi)}` +
+        (withLinks && g.url ? ` · [View ad ↗](${g.url})` : ""))
+      .join("\n");
   fields.push({
     name: "📈 Growing vs yesterday (creatives Meta is scaling)",
     value: d.growing.length
-      ? d.growing
-          .map((g, i) => `${i + 1}. ${plain(g.ad_name)} (${dtcLabel(g)}) · ${usd(g.before)} → ${usd(g.spend)} **+${Math.round(g.growth * 100)}%** · NC ${ratio(g.nc_roas)}${tick(g.nc_roas, d.kpi)}`)
-          .join("\n")
+      ? (growingText(true).length <= 1024 ? growingText(true) : growingText(false))
       : `Nothing grew ${Math.round(GROWTH_RULE.minGrowth * 100)}%+ from ${usd(GROWTH_RULE.minBefore)}+ yesterday.`,
   });
 
