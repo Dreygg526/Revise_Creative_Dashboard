@@ -1,8 +1,9 @@
 import { runDiscordCron } from "@/app/lib/discordCron";
 
-// Catch-up for the daily report, scheduled at 11:00 UTC = 7 PM Philippines,
-// two hours after the main run. Posts only when daily_figures_log has no row
-// for today's store day, so on a normal day it does nothing. Same CRON_SECRET;
+// Catch-up for the Discord reports, scheduled at 11:00 UTC = 7 PM Philippines,
+// two hours after the main run. Posts the daily report only when daily_figures_log
+// has no row for today, and on Mondays the hit rate only when discord_post_log has
+// none, so on a normal day it does nothing. Same CRON_SECRET;
 // takes &date=YYYY-MM-DD and &dry=1 like the main route.
 export const runtime = "nodejs";
 export const maxDuration = 300;

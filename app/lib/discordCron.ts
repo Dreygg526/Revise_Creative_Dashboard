@@ -10,12 +10,12 @@
 //      Discord 5xx / 429. Worst case 3 × 55s + 60s ≈ 225s, inside maxDuration 300.
 //   2. If every attempt fails, a short notice goes to the report's channel so
 //      the team hears it from us.
-//   3. The catch-up run posts the daily report only if daily_figures_log has no
-//      row for that store day. A row is written only after Discord accepts the
-//      post, so "no row" means "not posted".
-// The catch-up covers the daily report only: the hit rate keeps no log, so it
-// can't tell whether Monday's went out. A failed hit rate gets the notice and
-// is re-posted by hand (?kind=hitrate&date=…).
+//   3. The catch-up run posts whatever is missing: the daily report if
+//      daily_figures_log has no row for that store day, and on a hit-rate day
+//      the hit rate if discord_post_log (discord_post_log_schema.sql) has none.
+//      Rows are written only after Discord accepts the post, so "no row" means
+//      "not posted". A log it can't read means "don't know", and it posts
+//      nothing rather than risk a duplicate.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireCronSecret, serviceClient } from "@/app/lib/apiAuth";
@@ -50,13 +50,23 @@ async function withRetry<T>(label: string, fn: () => Promise<T>, waits: number[]
 
 // Already posted for this store day? null = couldn't tell (the caller must
 // then NOT post, or a missing table would mean a duplicate every evening).
-async function dailyAlreadyPosted(admin: SupabaseClient, date: string): Promise<boolean | null> {
-  const { data, error } = await admin.from("daily_figures_log").select("id").eq("report_date", date).eq("kind", "final").limit(1);
+async function alreadyPosted(admin: SupabaseClient, report: "daily" | "hitrate", date: string): Promise<boolean | null> {
+  const { data, error } = report === "daily"
+    ? await admin.from("daily_figures_log").select("id").eq("report_date", date).eq("kind", "final").limit(1)
+    : await admin.from("discord_post_log").select("id").eq("report", "hitrate").eq("report_date", date).limit(1);
   if (error) {
-    console.error("[discord] catch-up couldn't read daily_figures_log", error.message);
+    console.error(`[discord] catch-up couldn't read the ${report} log`, error.message);
     return null;
   }
   return (data?.length ?? 0) > 0;
+}
+
+// The hit rate's "it went out" record. Missing table = no record, never a
+// failed post (until discord_post_log_schema.sql is run, the catch-up just
+// can't cover the hit rate).
+async function logHitRate(admin: SupabaseClient, date: string, messageId: string | null): Promise<string | null> {
+  const { error } = await admin.from("discord_post_log").insert([{ report: "hitrate", report_date: date, message_id: messageId }]);
+  return error ? error.message : null;
 }
 
 function failureNotice(job: "daily" | "hitrate", e: unknown, catchup: boolean): DiscordMessage {
@@ -64,7 +74,7 @@ function failureNotice(job: "daily" | "hitrate", e: unknown, catchup: boolean): 
   const why = e instanceof TripleWhaleError
     ? `Triple Whale isn't responding (tried ${RETRY_WAITS_MS.length + 1} times)`
     : "it hit an error (details in the Vercel log)";
-  const next = job === "daily" && !catchup
+  const next = !catchup
     ? `It will try again automatically at ${CATCHUP_TIME}.`
     : "It will be posted by hand once this is fixed.";
   return { content: `⚠️ ${what} didn't go out: ${why}. ${next}`, embeds: [] };
@@ -81,27 +91,37 @@ export async function runDiscordCron(req: Request, opts: { catchup: boolean; wai
   }
 
   const url = new URL(req.url);
-  const kind = opts.catchup ? "daily" : url.searchParams.get("kind") || "auto";
+  const kind = opts.catchup ? "auto" : url.searchParams.get("kind") || "auto";
   const dry = url.searchParams.get("dry") === "1";
   const date = url.searchParams.get("date") || storeDate();
   const waits = opts.waits ?? RETRY_WAITS_MS;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return Response.json({ error: "date must be YYYY-MM-DD." }, { status: 400 });
   if (!["auto", "daily", "hitrate"].includes(kind)) return Response.json({ error: "kind must be daily, hitrate or auto." }, { status: 400 });
 
+  const wantDaily = kind === "auto" || kind === "daily";
+  const wantHitRate = kind === "hitrate" || (kind === "auto" && isHitRateDay(date));
+
+  // Catch-up: keep only what hasn't gone out. Anything it can't check is
+  // skipped (and reported), never posted blind.
+  const skipped: { report: string; ok: boolean; posted: false; skipped: string }[] = [];
+  let runDaily = wantDaily, runHitRate = wantHitRate;
   if (opts.catchup) {
-    const posted = await dailyAlreadyPosted(admin, date);
-    if (posted !== false) {
-      return Response.json({
+    for (const report of ["daily", "hitrate"] as const) {
+      if (report === "daily" ? !wantDaily : !wantHitRate) continue;
+      const posted = await alreadyPosted(admin, report, date);
+      if (posted === false) continue;
+      skipped.push({
+        report,
         ok: posted === true,
-        date,
-        catchup: true,
-        results: [{ report: "daily", ok: posted === true, posted: false, skipped: posted ? "already posted" : "couldn't read daily_figures_log, so nothing was posted" }],
-      }, { status: posted ? 200 : 500 });
+        posted: false,
+        skipped: posted ? "already posted" : `couldn't read the ${report === "daily" ? "daily_figures_log" : "discord_post_log"} table, so nothing was posted`,
+      });
+      if (report === "daily") runDaily = false; else runHitRate = false;
     }
   }
 
-  const jobs: { name: "daily" | "hitrate"; channel: Channel; build: () => Promise<{ msg: DiscordMessage; log?: () => Promise<string | null> }> }[] = [];
-  if (kind === "auto" || kind === "daily") {
+  const jobs: { name: "daily" | "hitrate"; channel: Channel; build: () => Promise<{ msg: DiscordMessage; log?: (messageId: string | null) => Promise<string | null> }> }[] = [];
+  if (runDaily) {
     jobs.push({
       name: "daily",
       channel: "daily",
@@ -111,8 +131,12 @@ export async function runDiscordCron(req: Request, opts: { catchup: boolean; wai
       },
     });
   }
-  if (kind === "hitrate" || (kind === "auto" && isHitRateDay(date))) {
-    jobs.push({ name: "hitrate", channel: "leads", build: async () => ({ msg: renderHitRate(await buildHitRate(admin, date)) }) });
+  if (runHitRate) {
+    jobs.push({
+      name: "hitrate",
+      channel: "leads",
+      build: async () => ({ msg: renderHitRate(await buildHitRate(admin, date)), log: (messageId) => logHitRate(admin, date, messageId) }),
+    });
   }
 
   // Each report independently: a failed hit rate must not cost the daily one.
@@ -126,7 +150,7 @@ export async function runDiscordCron(req: Request, opts: { catchup: boolean; wai
           return { report: job.name, ok: false, error: `No webhook set for this report (${job.channel === "daily" ? "DISCORD_WEBHOOK_DAILY_REPORT" : "DISCORD_WEBHOOK_CREATIVE_LEADS"}).` };
         }
         const posted = await withRetry(`${job.name} post`, () => postWebhook(hook.url!, msg), waits);
-        const logError = log ? await log() : null;
+        const logError = log ? await log(posted.id) : null;
         return { report: job.name, ok: true, posted: true, test_channel: hook.test, message_id: posted.id, log_error: logError };
       } catch (e) {
         const status = e instanceof TripleWhaleError || e instanceof DiscordError ? e.status : 500;
@@ -145,6 +169,7 @@ export async function runDiscordCron(req: Request, opts: { catchup: boolean; wai
     })
   );
 
-  const allOk = results.every((r) => r.ok);
-  return Response.json({ ok: allOk, date, catchup: opts.catchup, results }, { status: allOk ? 200 : 502 });
+  const all = [...skipped, ...results];
+  const allOk = all.every((r) => r.ok);
+  return Response.json({ ok: allOk, date, catchup: opts.catchup, results: all }, { status: allOk ? 200 : 502 });
 }
