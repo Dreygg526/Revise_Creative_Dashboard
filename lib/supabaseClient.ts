@@ -16,7 +16,18 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 // Fall back to a harmless placeholder URL so createClient never throws at build.
 // At runtime with the real env vars set, this uses the correct values.
-export const supabase = createClient(
-  supabaseUrl || "https://placeholder.supabase.co",
-  supabaseAnonKey || "placeholder-anon-key"
-);
+const realUrl = supabaseUrl || "https://placeholder.supabase.co";
+
+// In the browser, go through our own domain's /sb proxy (next.config.ts)
+// instead of supabase.co directly: some networks block supabase.co, which
+// showed up as "NetworkError when attempting to fetch resource" (2026-10-25).
+const clientUrl =
+  typeof window !== "undefined" && supabaseUrl ? `${window.location.origin}/sb` : realUrl;
+
+export const supabase = createClient(clientUrl, supabaseAnonKey || "placeholder-anon-key", {
+  auth: {
+    // supabase-js names the saved session after the URL's host. Pin it to the
+    // real project's name so the proxy doesn't sign everyone out.
+    storageKey: `sb-${new URL(realUrl).hostname.split(".")[0]}-auth-token`,
+  },
+});
