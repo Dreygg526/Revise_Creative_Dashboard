@@ -79,6 +79,8 @@ The app needs these env vars (Vercel: Project Settings > Environment Variables; 
 
 **Addresses (2026-10-11):** the site answers at `https://standardcreativedashboard.vercel.app` (the main one now) and the original `https://revise-creative-dashboard.vercel.app`. Both are aliases on the same Vercel project and serve the same deployment. Keep the old one: Axel's OpenClaw and the portfolio link use it. `creative-dashboard` and `creativedashboard` .vercel.app belong to strangers. Supabase → Authentication → URL Configuration must list the new address, or invite and reset emails go to the old one.
 
+**The browser never calls supabase.co directly (2026-10-25, `aaf0b4b`).** `lib/supabaseClient.ts` points the browser client at `<origin>/sb`, which `next.config.ts` rewrites to `NEXT_PUBLIC_SUPABASE_URL`. Reason: Anirudh got `Couldn't load ads: TypeError: NetworkError when attempting to fetch resource` (Firefox's wording; Chrome/Brave say `Failed to fetch`) and nothing saved, meaning his browser couldn't reach supabase.co (an ISP block like India's Feb 2026 one, a DNS filter, VPN or extension). `auth.storageKey` is pinned to the real project's `sb-<ref>-auth-token` so the switch signed nobody out. Server code still uses the real URL. Invite/reset email links still go to supabase.co directly.
+
 `lib/supabaseClient.ts` deliberately falls back to placeholder values and warns (rather than throwing) when the public vars are missing, so the Vercel prerender/build never crashes at module load.
 
 ## Architecture
