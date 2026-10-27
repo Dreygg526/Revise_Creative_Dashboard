@@ -28,8 +28,10 @@ const VIDEO_ACCEPT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 // Chunk size for the resumable upload. Multiple of 256KB, per Google's protocol.
 const UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024;
 // Tried in order: preview models get retired, so a 404 on one falls through to
-// the next rather than breaking the tab. Checked against the key 2026-10-20.
-const GEMINI_MODELS = ["gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-2.5-pro"];
+// the next rather than breaking the tab. Pro needs billing on the key's project
+// (free tier answers 429), so Flash closes the list. 2.5 is closed to new keys.
+// Checked against the new key 2026-10-27.
+const GEMINI_MODELS = ["gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-3.8-flash", "gemini-3.7-flash"];
 
 // What Gemini must pull out of a video. Written for both competitor ads and
 // our own creatives: the copywriter needs the actual words and beats, not a
@@ -261,8 +263,8 @@ export default function CopyAgentView() {
         return parts.filter((p) => p.text && !p.thought).map((p) => p.text).join("\n").trim();
       }
       lastStatus = res.status;
-      // Only a missing / unavailable model is worth trying the next one for.
-      if (res.status !== 404 && res.status !== 400 && res.status !== 503) break;
+      // A missing / unavailable / over-quota model is worth trying the next one for.
+      if (![400, 404, 429, 503].includes(res.status)) break;
     }
     throw new Error(`Gemini analysis failed (HTTP ${lastStatus}).`);
   }
